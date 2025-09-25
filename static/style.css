@@ -88,6 +88,21 @@ h1, h2, h3, h4 {
 .modal-content {
     border-radius: 12px;
 }
+.toast-container {
+    z-index: 1055; /* Ensure toasts appear above modals */
+}
+.toast {
+    font-family: 'Arial', sans-serif;
+    border-radius: 8px;
+    font-size: 1.1rem;
+    margin-bottom: 1rem;
+}
+.toast-body {
+    padding: 12px;
+}
+.btn-close-white {
+    filter: invert(100%); /* Ensure close button is visible on dark backgrounds */
+}
 @media (max-width: 576px) {
     .remaining-budget h2 {
         font-size: 2.5rem;
@@ -96,6 +111,9 @@ h1, h2, h3, h4 {
         font-size: 1rem;
     }
     .form-control {
+        font-size: 1rem;
+    }
+    .toast {
         font-size: 1rem;
     }
 }
