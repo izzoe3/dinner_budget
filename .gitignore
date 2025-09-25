@@ -1,0 +1,2 @@
+.env
+database.db # Exclude SQLite file, as Railway will generate it

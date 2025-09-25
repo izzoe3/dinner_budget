@@ -1,0 +1,171 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Dinner Budget Tracker</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+</head>
+<body>
+    <div class="container">
+        <div class="d-flex justify-content-between align-items-center mt-4 mb-4">
+            <h1>Dinner Budget</h1>
+            <a href="{{ url_for('logout') }}" class="btn btn-outline-secondary btn-touch">Logout</a>
+        </div>
+        {% with messages = get_flashed_messages(with_categories=true) %}
+            {% if messages %}
+                {% for category, message in messages %}
+                    <div class="alert alert-{{ category }} alert-dismissible fade show" role="alert">
+                        {{ message }}
+                        <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
+                    </div>
+                {% endfor %}
+            {% endif %}
+        {% endwith %}
+
+        <!-- Remaining Budget -->
+        <div class="remaining-budget text-center mb-4">
+            <h2 class="display-4 fw-bold">RM {{ remaining|round(2) }}</h2>
+            <p>Remaining Budget</p>
+            {% if role == 'admin' %}
+            <button type="button" class="btn btn-primary btn-touch mt-2 me-2" data-bs-toggle="modal" data-bs-target="#editBudgetModal">Edit Budget</button>
+            <button type="button" class="btn btn-warning btn-touch mt-2" data-bs-toggle="modal" data-bs-target="#resetBudgetModal">Reset Budget</button>
+            {% endif %}
+        </div>
+
+        <!-- Edit Budget Modal -->
+        {% if role == 'admin' %}
+        <div class="modal fade" id="editBudgetModal" tabindex="-1" aria-labelledby="editBudgetModalLabel" aria-hidden="true">
+            <div class="modal-dialog">
+                <div class="modal-content">
+                    <div class="modal-header">
+                        <h5 class="modal-title" id="editBudgetModalLabel">Edit Budget</h5>
+                        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                    </div>
+                    <form method="POST">
+                        <div class="modal-body">
+                            <div class="mb-3">
+                                <label for="budget" class="form-label">New Budget</label>
+                                <input type="number" name="budget" class="form-control" placeholder="Enter new budget" step="0.01" min="0" required>
+                            </div>
+                        </div>
+                        <div class="modal-footer">
+                            <button type="button" class="btn btn-secondary btn-touch" data-bs-dismiss="modal">Cancel</button>
+                            <button type="submit" name="set_budget" class="btn btn-primary btn-touch">Save</button>
+                        </div>
+                    </form>
+                </div>
+            </div>
+        </div>
+
+        <!-- Reset Budget Modal -->
+        <div class="modal fade" id="resetBudgetModal" tabindex="-1" aria-labelledby="resetBudgetModalLabel" aria-hidden="true">
+            <div class="modal-dialog">
+                <div class="modal-content">
+                    <div class="modal-header">
+                        <h5 class="modal-title" id="resetBudgetModalLabel">Reset Budget</h5>
+                        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                    </div>
+                    <form method="POST">
+                        <div class="modal-body">
+                            <p>This will archive current dinners and reset the budget.</p>
+                            <div class="mb-3">
+                                <label for="new_budget" class="form-label">New Budget</label>
+                                <input type="number" name="new_budget" class="form-control" placeholder="Enter new budget" step="0.01" min="0" required>
+                            </div>
+                        </div>
+                        <div class="modal-footer">
+                            <button type="button" class="btn btn-secondary btn-touch" data-bs-dismiss="modal">Cancel</button>
+                            <button type="submit" name="reset_budget" class="btn btn-warning btn-touch">Reset</button>
+                        </div>
+                    </form>
+                </div>
+            </div>
+        </div>
+        {% endif %}
+
+        <!-- Total Spent -->
+        <div class="summary text-center mb-4">
+            <p><strong>Total Spent:</strong> RM {{ total_spent|round(2) }}</p>
+        </div>
+
+        <!-- Add Dinner -->
+        {% if role == 'admin' %}
+        <form method="POST" class="mb-4">
+            <div class="mb-3">
+                <input type="text" name="description" class="form-control" placeholder="Dinner description" maxlength="100" required>
+            </div>
+            <div class="mb-3">
+                <input type="number" name="amount" class="form-control" placeholder="Amount" step="0.01" min="0.01" required>
+            </div>
+            <div class="mb-3">
+                <label for="date" class="form-label">Date</label>
+                <input type="date" name="date" class="form-control" value="{{ today }}" required>
+            </div>
+            <button type="submit" name="add_dinner" class="btn btn-primary btn-touch w-100">Add Dinner</button>
+        </form>
+        {% endif %}
+
+        <!-- View Records Button -->
+        <a href="{{ url_for('records') }}" class="btn btn-secondary btn-touch w-100 mb-4">View All Records</a>
+
+        <!-- Latest Dinner -->
+        {% if latest_dinner %}
+        <div class="latest-dinner mb-4">
+            <h4>Latest Expense</h4>
+            <div class="card latest-card">
+                <div class="card-body d-flex justify-content-between align-items-center">
+                    <div>
+                        <h6 class="card-title">{{ latest_dinner[1] }}</h6>
+                        <p class="card-text">RM {{ latest_dinner[2]|round(2) }} on {{ latest_dinner[3] }}</p>
+                    </div>
+                    {% if role == 'admin' %}
+                    <div>
+                        <button type="button" class="btn btn-outline-primary btn-touch btn-sm me-2" data-bs-toggle="modal" data-bs-target="#editDinnerModal{{ latest_dinner[0] }}">Edit</button>
+                        <form method="POST" action="{{ url_for('delete', dinner_id=latest_dinner[0]) }}" style="display:inline;">
+                            <button type="submit" class="btn btn-outline-danger btn-touch btn-sm">Delete</button>
+                        </form>
+                    </div>
+                    {% endif %}
+                </div>
+            </div>
+            <!-- Edit Dinner Modal -->
+            {% if role == 'admin' %}
+            <div class="modal fade" id="editDinnerModal{{ latest_dinner[0] }}" tabindex="-1" aria-labelledby="editDinnerModalLabel{{ latest_dinner[0] }}" aria-hidden="true">
+                <div class="modal-dialog">
+                    <div class="modal-content">
+                        <div class="modal-header">
+                            <h5 class="modal-title" id="editDinnerModalLabel{{ latest_dinner[0] }}">Edit Dinner</h5>
+                            <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                        </div>
+                        <form method="POST">
+                            <div class="modal-body">
+                                <input type="hidden" name="dinner_id" value="{{ latest_dinner[0] }}">
+                                <div class="mb-3">
+                                    <label for="description" class="form-label">Description</label>
+                                    <input type="text" name="description" class="form-control" value="{{ latest_dinner[1] }}" maxlength="100" required>
+                                </div>
+                                <div class="mb-3">
+                                    <label for="amount" class="form-label">Amount</label>
+                                    <input type="number" name="amount" class="form-control" value="{{ latest_dinner[2] }}" step="0.01" min="0.01" required>
+                                </div>
+                                <div class="mb-3">
+                                    <label for="date" class="form-label">Date</label>
+                                    <input type="date" name="date" class="form-control" value="{{ latest_dinner[3] }}" required>
+                                </div>
+                            </div>
+                            <div class="modal-footer">
+                                <button type="button" class="btn btn-secondary btn-touch" data-bs-dismiss="modal">Cancel</button>
+                                <button type="submit" name="edit_dinner" class="btn btn-primary btn-touch">Save</button>
+                            </div>
+                        </form>
+                    </div>
+                </div>
+            </div>
+            {% endif %}
+        {% endif %}
+    </div>
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+</body>
+</html>

@@ -1,0 +1,101 @@
+body {
+    font-family: 'Arial', sans-serif;
+    background-color: #f8f9fa;
+    color: #212529;
+}
+.container {
+    max-width: 600px;
+    margin: 0 auto;
+    padding: 20px;
+}
+h1, h2, h3, h4 {
+    font-weight: 500;
+    color: #212529;
+}
+.remaining-budget h2 {
+    font-size: 3.5rem;
+    color: #007bff;
+}
+.btn-primary {
+    background-color: #007bff;
+    border: none;
+    border-radius: 8px;
+    padding: 12px;
+    font-size: 1.1rem;
+}
+.btn-outline-primary {
+    border-color: #007bff;
+    color: #007bff;
+    border-radius: 8px;
+    padding: 8px;
+}
+.btn-outline-danger {
+    border-color: #dc3545;
+    color: #dc3545;
+    border-radius: 8px;
+    padding: 8px;
+}
+.btn-secondary, .btn-outline-secondary {
+    background-color: #6c757d;
+    border-color: #6c757d;
+    color: #fff;
+    border-radius: 8px;
+    padding: 12px;
+    font-size: 1.1rem;
+}
+.btn-touch {
+    min-height: 48px;
+    font-size: 1.1rem;
+}
+.btn-touch.btn-sm {
+    min-height: 36px;
+    font-size: 0.9rem;
+}
+.form-control {
+    border-radius: 8px;
+    padding: 12px;
+    font-size: 1.1rem;
+}
+.card {
+    border-radius: 12px;
+    border: 1px solid #dee2e6;
+    background-color: #fff;
+}
+.latest-card {
+    border: 1px solid #e9ecef;
+    background-color: #f8f9fa;
+}
+.card-body {
+    padding: 12px;
+}
+.summary p {
+    font-size: 1.2rem;
+    margin-bottom: 0.5rem;
+}
+.table {
+    background-color: #fff;
+    border: 1px solid #dee2e6;
+    border-radius: 8px;
+}
+.table th, .table td {
+    padding: 12px;
+    vertical-align: middle;
+}
+.alert {
+    border-radius: 8px;
+    margin-bottom: 1rem;
+}
+.modal-content {
+    border-radius: 12px;
+}
+@media (max-width: 576px) {
+    .remaining-budget h2 {
+        font-size: 2.5rem;
+    }
+    .btn-touch {
+        font-size: 1rem;
+    }
+    .form-control {
+        font-size: 1rem;
+    }
+}
