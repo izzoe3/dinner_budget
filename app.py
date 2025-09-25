@@ -7,6 +7,11 @@ from dotenv import load_dotenv
 from datetime import datetime, timedelta
 import io
 import csv
+import logging
+
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 # Load environment variables
 load_dotenv()
@@ -31,36 +36,50 @@ USERS = {
 
 POSTGRES_URL = os.getenv('POSTGRES_URL')
 
+def get_placeholder(conn):
+    """Return appropriate placeholder for the database type."""
+    if isinstance(conn, sqlite3.Connection):
+        return '?'
+    return '%s'
+
 def get_db_connection():
     if os.getenv('VERCEL_ENV') == 'production' and POSTGRES_URL:
         try:
-            return psycopg2.connect(POSTGRES_URL)
+            conn = psycopg2.connect(POSTGRES_URL)
+            conn.set_session(autocommit=False)  # Explicit transaction control
+            return conn
         except psycopg2.Error as e:
-            print(f"Database connection error: {e}")
+            logger.error(f"Database connection error: {e}")
             raise
     else:
-        # Local SQLite
-        return sqlite3.connect(os.path.join(os.path.dirname(__file__), 'database.db'))
+        try:
+            conn = sqlite3.connect(os.path.join(os.path.dirname(__file__), 'database.db'))
+            conn.row_factory = sqlite3.Row  # For consistent row access
+            return conn
+        except sqlite3.Error as e:
+            logger.error(f"SQLite connection error: {e}")
+            raise
 
 # Database setup
 def init_db():
     conn = get_db_connection()
+    cursor = conn.cursor()
     if os.getenv('VERCEL_ENV') == 'production' and POSTGRES_URL:
         # Tables created in Supabase SQL Editor
         pass
     else:
-        cursor = conn.cursor()
         cursor.execute('CREATE TABLE IF NOT EXISTS budget (id INTEGER PRIMARY KEY, amount REAL NOT NULL)')
         cursor.execute('CREATE TABLE IF NOT EXISTS dinners (id INTEGER PRIMARY KEY AUTOINCREMENT, description TEXT NOT NULL, amount REAL NOT NULL, date TEXT NOT NULL)')
         cursor.execute('CREATE TABLE IF NOT EXISTS archived_dinners (id INTEGER PRIMARY KEY AUTOINCREMENT, description TEXT NOT NULL, amount REAL NOT NULL, date TEXT NOT NULL, archive_date TEXT NOT NULL)')
         cursor.execute('CREATE TABLE IF NOT EXISTS users (id INTEGER PRIMARY KEY, role TEXT NOT NULL)')
         cursor.execute('INSERT OR IGNORE INTO budget (id, amount) VALUES (1, 0)')
-        cursor.execute('INSERT OR IGNORE INTO users (id, role) VALUES (1, "admin")')
-        cursor.execute('INSERT OR IGNORE INTO users (id, role) VALUES (2, "viewer")')
         conn.commit()
-        conn.close()
+    conn.close()
 
-init_db()
+try:
+    init_db()
+except Exception as e:
+    logger.error(f"Database initialization error: {e}")
 
 # Login required decorator
 def login_required(f):
@@ -80,12 +99,19 @@ def admin_required(f):
             return redirect(url_for('login'))
         conn = get_db_connection()
         cursor = conn.cursor()
-        cursor.execute('SELECT role FROM users WHERE id = %s', (session['user_id'],))
-        role = cursor.fetchone()
-        conn.close()
-        if not role or role[0] != 'admin':
-            flash('Access denied: Admin privileges required.', 'danger')
+        placeholder = get_placeholder(conn)
+        try:
+            cursor.execute(f'SELECT role FROM users WHERE id = {placeholder}', (session['user_id'],))
+            role = cursor.fetchone()
+            if not role or role[0] != 'admin':
+                flash('Access denied: Admin privileges required.', 'danger')
+                return redirect(url_for('index'))
+        except Exception as e:
+            logger.error(f"Admin check error: {e}")
+            flash('Database error during authorization.', 'danger')
             return redirect(url_for('index'))
+        finally:
+            conn.close()
         return f(*args, **kwargs)
     wrap.__name__ = f.__name__
     return wrap
@@ -117,45 +143,154 @@ def logout():
 def index():
     conn = get_db_connection()
     cursor = conn.cursor()
+    placeholder = get_placeholder(conn)
 
-    if request.method == 'POST':
-        if 'set_budget' in request.form:
-            if session.get('role') != 'admin':
-                flash('Access denied: Admin privileges required.', 'danger')
-            else:
-                try:
-                    budget = float(request.form['budget'])
-                    if budget < 0:
-                        flash('Budget cannot be negative.', 'danger')
-                    else:
-                        cursor.execute('UPDATE budget SET amount = %s WHERE id = 1', (budget,))
-                        flash('Budget updated successfully.', 'success')
-                except ValueError:
-                    flash('Invalid budget amount.', 'danger')
-        elif 'add_dinner' in request.form:
-            if session.get('role') != 'admin':
-                flash('Access denied: Admin privileges required.', 'danger')
-            else:
-                description = request.form['description'].strip()
-                if len(description) > 100:
-                    flash('Description cannot exceed 100 characters.', 'danger')
+    try:
+        if request.method == 'POST':
+            if 'set_budget' in request.form:
+                if session.get('role') != 'admin':
+                    flash('Access denied: Admin privileges required.', 'danger')
                 else:
                     try:
-                        amount = float(request.form['amount'])
-                        if amount <= 0:
-                            flash('Dinner amount must be positive.', 'danger')
+                        budget = float(request.form['budget'])
+                        if budget < 0:
+                            flash('Budget cannot be negative.', 'danger')
                         else:
-                            date = request.form['date']
-                            try:
-                                datetime.strptime(date, '%Y-%m-%d')
-                                cursor.execute('INSERT INTO dinners (description, amount, date) VALUES (%s, %s, %s)', 
-                                             (description, amount, date))
-                                flash('Dinner added successfully.', 'success')
-                            except ValueError:
-                                flash('Invalid date format.', 'danger')
+                            cursor.execute(f'UPDATE budget SET amount = {placeholder} WHERE id = 1', (budget,))
+                            conn.commit()
+                            flash('Budget updated successfully.', 'success')
                     except ValueError:
-                        flash('Invalid dinner amount.', 'danger')
-        elif 'edit_dinner' in request.form:
+                        flash('Invalid budget amount.', 'danger')
+            elif 'add_dinner' in request.form:
+                if session.get('role') != 'admin':
+                    flash('Access denied: Admin privileges required.', 'danger')
+                else:
+                    description = request.form['description'].strip()
+                    if len(description) > 100:
+                        flash('Description cannot exceed 100 characters.', 'danger')
+                    else:
+                        try:
+                            amount = float(request.form['amount'])
+                            if amount <= 0:
+                                flash('Dinner amount must be positive.', 'danger')
+                            else:
+                                date = request.form['date']
+                                try:
+                                    datetime.strptime(date, '%Y-%m-%d')
+                                    cursor.execute(f'INSERT INTO dinners (description, amount, date) VALUES ({placeholder}, {placeholder}, {placeholder})', 
+                                                 (description, amount, date))
+                                    conn.commit()
+                                    flash('Dinner added successfully.', 'success')
+                                except ValueError:
+                                    flash('Invalid date format.', 'danger')
+                        except ValueError:
+                            flash('Invalid dinner amount.', 'danger')
+            elif 'edit_dinner' in request.form:
+                if session.get('role') != 'admin':
+                    flash('Access denied: Admin privileges required.', 'danger')
+                else:
+                    dinner_id = request.form['dinner_id']
+                    description = request.form['description'].strip()
+                    if len(description) > 100:
+                        flash('Description cannot exceed 100 characters.', 'danger')
+                    else:
+                        try:
+                            amount = float(request.form['amount'])
+                            if amount <= 0:
+                                flash('Dinner amount must be positive.', 'danger')
+                            else:
+                                date = request.form['date']
+                                try:
+                                    datetime.strptime(date, '%Y-%m-%d')
+                                    cursor.execute(f'UPDATE dinners SET description = {placeholder}, amount = {placeholder}, date = {placeholder} WHERE id = {placeholder}', 
+                                                 (description, amount, date, dinner_id))
+                                    conn.commit()
+                                    flash('Dinner updated successfully.', 'success')
+                                except ValueError:
+                                    flash('Invalid date format.', 'danger')
+                        except ValueError:
+                            flash('Invalid dinner amount.', 'danger')
+            elif 'reset_budget' in request.form:
+                if session.get('role') != 'admin':
+                    flash('Access denied: Admin privileges required.', 'danger')
+                else:
+                    try:
+                        new_budget = float(request.form['new_budget'])
+                        if new_budget < 0:
+                            flash('New budget cannot be negative.', 'danger')
+                        else:
+                            archive_date = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                            cursor.execute(f'INSERT INTO archived_dinners (description, amount, date, archive_date) SELECT description, amount, date, {placeholder} FROM dinners', (archive_date,))
+                            cursor.execute('DELETE FROM dinners')
+                            cursor.execute(f'UPDATE budget SET amount = {placeholder} WHERE id = 1', (new_budget,))
+                            conn.commit()
+                            flash('Budget reset and dinners archived successfully.', 'success')
+                    except ValueError:
+                        flash('Invalid new budget amount.', 'danger')
+
+        # Fetch data
+        cursor.execute(f'SELECT amount FROM budget WHERE id = 1')
+        budget_row = cursor.fetchone()
+        budget = float(budget_row[0]) if budget_row else 0.0
+
+        cursor.execute(f'SELECT id, description, amount, date FROM dinners ORDER BY date DESC LIMIT 1')
+        latest_dinner = cursor.fetchone()
+
+        cursor.execute(f'SELECT SUM(amount) as total FROM dinners')
+        total_spent_row = cursor.fetchone()
+        total_spent = float(total_spent_row[0]) if total_spent_row[0] is not None else 0.0
+
+        remaining = budget - total_spent
+
+    except Exception as e:
+        logger.error(f"Index route error: {e}")
+        flash('Database error occurred.', 'danger')
+        budget = 0.0
+        latest_dinner = None
+        total_spent = 0.0
+        remaining = 0.0
+    finally:
+        conn.close()
+
+    return render_template('index.html', budget=budget, latest_dinner=latest_dinner, total_spent=total_spent, 
+                         remaining=remaining, role=session.get('role'), today=datetime.now().strftime('%Y-%m-%d'))
+
+@app.route('/records', methods=['GET', 'POST'])
+@login_required
+def records():
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    placeholder = get_placeholder(conn)
+
+    try:
+        # Initialize filters
+        description_filter = request.form.get('description', '') if request.method == 'POST' else ''
+        date_from = request.form.get('date_from', '') if request.method == 'POST' else ''
+        date_to = request.form.get('date_to', '') if request.method == 'POST' else ''
+
+        # Build query
+        query = 'SELECT id, description, amount, date FROM dinners WHERE 1=1'
+        params = []
+        if description_filter:
+            query += f' AND description {"LIKE" if isinstance(conn, sqlite3.Connection) else "ILIKE"} {placeholder}'
+            params.append(f'%{description_filter}%')
+        if date_from:
+            try:
+                datetime.strptime(date_from, '%Y-%m-%d')
+                query += f' AND date >= {placeholder}'
+                params.append(date_from)
+            except ValueError:
+                flash('Invalid start date format.', 'danger')
+        if date_to:
+            try:
+                datetime.strptime(date_to, '%Y-%m-%d')
+                query += f' AND date <= {placeholder}'
+                params.append(date_to)
+            except ValueError:
+                flash('Invalid end date format.', 'danger')
+        query += ' ORDER BY date DESC'
+
+        if request.method == 'POST' and 'edit_dinner' in request.form:
             if session.get('role') != 'admin':
                 flash('Access denied: Admin privileges required.', 'danger')
             else:
@@ -172,125 +307,53 @@ def index():
                             date = request.form['date']
                             try:
                                 datetime.strptime(date, '%Y-%m-%d')
-                                cursor.execute('UPDATE dinners SET description = %s, amount = %s, date = %s WHERE id = %s', 
+                                cursor.execute(f'UPDATE dinners SET description = {placeholder}, amount = {placeholder}, date = {placeholder} WHERE id = {placeholder}', 
                                              (description, amount, date, dinner_id))
+                                conn.commit()
                                 flash('Dinner updated successfully.', 'success')
                             except ValueError:
                                 flash('Invalid date format.', 'danger')
                     except ValueError:
                         flash('Invalid dinner amount.', 'danger')
-        elif 'reset_budget' in request.form:
-            if session.get('role') != 'admin':
-                flash('Access denied: Admin privileges required.', 'danger')
-            else:
-                try:
-                    new_budget = float(request.form['new_budget'])
-                    if new_budget < 0:
-                        flash('New budget cannot be negative.', 'danger')
-                    else:
-                        archive_date = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-                        cursor.execute('INSERT INTO archived_dinners (description, amount, date, archive_date) SELECT description, amount, date, %s FROM dinners', (archive_date,))
-                        cursor.execute('DELETE FROM dinners')
-                        cursor.execute('UPDATE budget SET amount = %s WHERE id = 1', (new_budget,))
-                        flash('Budget reset and dinners archived successfully.', 'success')
-                except ValueError:
-                    flash('Invalid new budget amount.', 'danger')
-        conn.commit()
 
-    # Fetch data
-    cursor.execute('SELECT amount FROM budget WHERE id = 1')
-    budget = cursor.fetchone()[0]
-    cursor.execute('SELECT id, description, amount, date FROM dinners ORDER BY date DESC LIMIT 1')
-    latest_dinner = cursor.fetchone()
-    cursor.execute('SELECT SUM(amount) as total FROM dinners')
-    total_spent = cursor.fetchone()[0] or 0
-    remaining = budget - total_spent
+        # Fetch dinners with filters
+        cursor.execute(query, params)
+        dinners = cursor.fetchall()
 
-    conn.close()
-    return render_template('index.html', budget=budget, latest_dinner=latest_dinner, total_spent=total_spent, 
-                         remaining=remaining, role=session.get('role'), today=datetime.now().strftime('%Y-%m-%d'))
+        # Spending summary
+        today = datetime.now()
+        week_start = (today - timedelta(days=today.weekday())).strftime('%Y-%m-%d')
+        month_start = today.replace(day=1).strftime('%Y-%m-%d')
+        cursor.execute(f'SELECT SUM(amount) as total FROM dinners WHERE date >= {placeholder}', (week_start,))
+        week_spent_row = cursor.fetchone()
+        week_spent = float(week_spent_row[0]) if week_spent_row[0] is not None else 0.0
 
-@app.route('/records', methods=['GET', 'POST'])
-@login_required
-def records():
-    conn = get_db_connection()
-    cursor = conn.cursor()
+        cursor.execute(f'SELECT SUM(amount) as total FROM dinners WHERE date >= {placeholder}', (month_start,))
+        month_spent_row = cursor.fetchone()
+        month_spent = float(month_spent_row[0]) if month_spent_row[0] is not None else 0.0
 
-    # Initialize filters
-    description_filter = request.form.get('description', '') if request.method == 'POST' else ''
-    date_from = request.form.get('date_from', '') if request.method == 'POST' else ''
-    date_to = request.form.get('date_to', '') if request.method == 'POST' else ''
+        # Budget threshold check
+        cursor.execute(f'SELECT amount FROM budget WHERE id = 1')
+        budget_row = cursor.fetchone()
+        budget = float(budget_row[0]) if budget_row else 0.0
 
-    # Build query
-    query = 'SELECT id, description, amount, date FROM dinners WHERE 1=1'
-    params = []
-    if description_filter:
-        query += ' AND description ILIKE %s'
-        params.append(f'%{description_filter}%')
-    if date_from:
-        try:
-            datetime.strptime(date_from, '%Y-%m-%d')
-            query += ' AND date >= %s'
-            params.append(date_from)
-        except ValueError:
-            flash('Invalid start date format.', 'danger')
-    if date_to:
-        try:
-            datetime.strptime(date_to, '%Y-%m-%d')
-            query += ' AND date <= %s'
-            params.append(date_to)
-        except ValueError:
-            flash('Invalid end date format.', 'danger')
-    query += ' ORDER BY date DESC'
+        cursor.execute(f'SELECT SUM(amount) as total FROM dinners')
+        total_spent_row = cursor.fetchone()
+        total_spent = float(total_spent_row[0]) if total_spent_row[0] is not None else 0.0
 
-    if request.method == 'POST' and 'edit_dinner' in request.form:
-        if session.get('role') != 'admin':
-            flash('Access denied: Admin privileges required.', 'danger')
-        else:
-            dinner_id = request.form['dinner_id']
-            description = request.form['description'].strip()
-            if len(description) > 100:
-                flash('Description cannot exceed 100 characters.', 'danger')
-            else:
-                try:
-                    amount = float(request.form['amount'])
-                    if amount <= 0:
-                        flash('Dinner amount must be positive.', 'danger')
-                    else:
-                        date = request.form['date']
-                        try:
-                            datetime.strptime(date, '%Y-%m-%d')
-                            cursor.execute('UPDATE dinners SET description = %s, amount = %s, date = %s WHERE id = %s', 
-                                         (description, amount, date, dinner_id))
-                            flash('Dinner updated successfully.', 'success')
-                        except ValueError:
-                            flash('Invalid date format.', 'danger')
-                except ValueError:
-                    flash('Invalid dinner amount.', 'danger')
-        conn.commit()
+        remaining = budget - total_spent
+        threshold_alert = remaining < (budget * 0.2) and budget > 0
 
-    # Fetch dinners with filters
-    cursor.execute(query, params)
-    dinners = cursor.fetchall()
+    except Exception as e:
+        logger.error(f"Records route error: {e}")
+        flash('Database error occurred.', 'danger')
+        dinners = []
+        week_spent = 0.0
+        month_spent = 0.0
+        threshold_alert = False
+    finally:
+        conn.close()
 
-    # Spending summary
-    today = datetime.now()
-    week_start = (today - timedelta(days=today.weekday())).strftime('%Y-%m-%d')
-    month_start = today.replace(day=1).strftime('%Y-%m-%d')
-    cursor.execute('SELECT SUM(amount) as total FROM dinners WHERE date >= %s', (week_start,))
-    week_spent = cursor.fetchone()[0] or 0
-    cursor.execute('SELECT SUM(amount) as total FROM dinners WHERE date >= %s', (month_start,))
-    month_spent = cursor.fetchone()[0] or 0
-
-    # Budget threshold check
-    cursor.execute('SELECT amount FROM budget WHERE id = 1')
-    budget = cursor.fetchone()[0]
-    cursor.execute('SELECT SUM(amount) as total FROM dinners')
-    total_spent = cursor.fetchone()[0] or 0
-    remaining = budget - total_spent
-    threshold_alert = remaining < (budget * 0.2) and budget > 0
-
-    conn.close()
     return render_template('records.html', dinners=dinners, role=session.get('role'), 
                          week_spent=week_spent, month_spent=month_spent, threshold_alert=threshold_alert,
                          description_filter=description_filter, date_from=date_from, date_to=date_to)
@@ -300,10 +363,16 @@ def records():
 def delete(dinner_id):
     conn = get_db_connection()
     cursor = conn.cursor()
-    cursor.execute('DELETE FROM dinners WHERE id = %s', (dinner_id,))
-    conn.commit()
-    conn.close()
-    flash('Dinner deleted successfully.', 'success')
+    placeholder = get_placeholder(conn)
+    try:
+        cursor.execute(f'DELETE FROM dinners WHERE id = {placeholder}', (dinner_id,))
+        conn.commit()
+        flash('Dinner deleted successfully.', 'success')
+    except Exception as e:
+        logger.error(f"Delete route error: {e}")
+        flash('Error deleting dinner.', 'danger')
+    finally:
+        conn.close()
     return redirect(request.referrer or url_for('index'))
 
 @app.route('/export', methods=['GET'])
@@ -311,15 +380,21 @@ def delete(dinner_id):
 def export():
     conn = get_db_connection()
     cursor = conn.cursor()
-    cursor.execute('SELECT description, amount, date FROM dinners ORDER BY date DESC')
-    dinners = cursor.fetchall()
-    conn.close()
+    try:
+        cursor.execute('SELECT description, amount, date FROM dinners ORDER BY date DESC')
+        dinners = cursor.fetchall()
+    except Exception as e:
+        logger.error(f"Export route error: {e}")
+        flash('Error exporting data.', 'danger')
+        dinners = []
+    finally:
+        conn.close()
 
     output = io.StringIO()
     writer = csv.writer(output)
     writer.writerow(['Description', 'Amount (RM)', 'Date'])
     for dinner in dinners:
-        writer.writerow([dinner[0], f"{dinner[1]:.2f}", dinner[2]])
+        writer.writerow([dinner[0], f"{float(dinner[1]):.2f}", dinner[2]])
 
     output.seek(0)
     return send_file(
