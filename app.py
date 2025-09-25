@@ -1,6 +1,7 @@
 import os
 import sqlite3
 import psycopg2
+from psycopg2 import pool
 from flask import Flask, render_template, request, redirect, url_for, session, flash, send_file
 from flask_bcrypt import Bcrypt
 from dotenv import load_dotenv
@@ -21,32 +22,44 @@ app.secret_key = os.getenv('SECRET_KEY', 'your-secret-key')  # Fallback for loca
 bcrypt = Bcrypt(app)
 
 # Environment-based user credentials
-USERS = {
-    os.getenv('ADMIN_USERNAME', 'admin_user'): {
-        'password': os.getenv('ADMIN_PASSWORD_HASH'),
-        'role': 'admin',
-        'id': 1
-    },
-    os.getenv('VIEWER_USERNAME', 'wife_user'): {
-        'password': os.getenv('VIEWER_PASSWORD_HASH'),
-        'role': 'viewer',
-        'id': 2
+try:
+    USERS = {
+        os.getenv('ADMIN_USERNAME', 'admin_user'): {
+            'password': os.getenv('ADMIN_PASSWORD_HASH'),
+            'role': 'admin',
+            'id': 1
+        },
+        os.getenv('VIEWER_USERNAME', 'wife_user'): {
+            'password': os.getenv('VIEWER_PASSWORD_HASH'),
+            'role': 'viewer',
+            'id': 2
+        }
     }
-}
+    if not all(USERS[key].get('password') for key in USERS):
+        logger.error("Missing or invalid user credentials in environment variables")
+        raise ValueError("User credentials are not properly configured")
+except Exception as e:
+    logger.error(f"Error initializing USERS: {e}")
+    USERS = {}  # Fallback to prevent crashes
 
 POSTGRES_URL = os.getenv('POSTGRES_URL')
 
-def get_placeholder(conn):
-    """Return appropriate placeholder for the database type."""
-    if isinstance(conn, sqlite3.Connection):
-        return '?'
-    return '%s'
+# Connection pool for PostgreSQL
+connection_pool = None
+if os.getenv('VERCEL_ENV') == 'production' and POSTGRES_URL:
+    try:
+        connection_pool = psycopg2.pool.SimpleConnectionPool(
+            1, 10, POSTGRES_URL  # Min 1, max 10 connections
+        )
+        logger.info("PostgreSQL connection pool initialized")
+    except psycopg2.Error as e:
+        logger.error(f"Failed to initialize connection pool: {e}")
 
 def get_db_connection():
-    if os.getenv('VERCEL_ENV') == 'production' and POSTGRES_URL:
+    if os.getenv('VERCEL_ENV') == 'production' and connection_pool:
         try:
-            conn = psycopg2.connect(POSTGRES_URL)
-            conn.set_session(autocommit=False)  # Explicit transaction control
+            conn = connection_pool.getconn()
+            conn.set_session(autocommit=False)
             return conn
         except psycopg2.Error as e:
             logger.error(f"Database connection error: {e}")
@@ -54,11 +67,17 @@ def get_db_connection():
     else:
         try:
             conn = sqlite3.connect(os.path.join(os.path.dirname(__file__), 'database.db'))
-            conn.row_factory = sqlite3.Row  # For consistent row access
+            conn.row_factory = sqlite3.Row
             return conn
         except sqlite3.Error as e:
             logger.error(f"SQLite connection error: {e}")
             raise
+
+def release_db_connection(conn):
+    if os.getenv('VERCEL_ENV') == 'production' and connection_pool:
+        connection_pool.putconn(conn)
+    else:
+        conn.close()
 
 # Database setup
 def init_db():
@@ -74,12 +93,18 @@ def init_db():
         cursor.execute('CREATE TABLE IF NOT EXISTS users (id INTEGER PRIMARY KEY, role TEXT NOT NULL)')
         cursor.execute('INSERT OR IGNORE INTO budget (id, amount) VALUES (1, 0)')
         conn.commit()
-    conn.close()
+    release_db_connection(conn)
 
 try:
     init_db()
 except Exception as e:
     logger.error(f"Database initialization error: {e}")
+
+def get_placeholder(conn):
+    """Return appropriate placeholder for the database type."""
+    if isinstance(conn, sqlite3.Connection):
+        return '?'
+    return '%s'
 
 # Login required decorator
 def login_required(f):
@@ -111,31 +136,44 @@ def admin_required(f):
             flash('Database error during authorization.', 'danger')
             return redirect(url_for('index'))
         finally:
-            conn.close()
+            release_db_connection(conn)
         return f(*args, **kwargs)
     wrap.__name__ = f.__name__
     return wrap
 
 @app.route('/login', methods=['GET', 'POST'])
 def login():
-    if request.method == 'POST':
-        username = request.form['username']
-        password = request.form['password']
-        user = USERS.get(username)
-        if user and bcrypt.check_password_hash(user['password'], password):
-            session['user_id'] = user['id']
-            session['role'] = user['role']
-            flash('Login successful!', 'success')
-            return redirect(url_for('index'))
-        else:
-            flash('Invalid username or password.', 'danger')
-    return render_template('login.html')
+    try:
+        if request.method == 'POST':
+            username = request.form.get('username', '').strip()
+            password = request.form.get('password', '')
+            if not username or not password:
+                flash('Username and password are required.', 'danger')
+                logger.warning("Empty username or password in login attempt")
+                return render_template('login.html')
+            
+            user = USERS.get(username)
+            if user and user.get('password') and bcrypt.check_password_hash(user['password'], password):
+                session['user_id'] = user['id']
+                session['role'] = user['role']
+                flash('Login successful!', 'success')
+                logger.info(f"Successful login for user: {username}")
+                return redirect(url_for('index'))
+            else:
+                flash('Invalid username or password.', 'danger')
+                logger.warning(f"Failed login attempt for username: {username}")
+        return render_template('login.html')
+    except Exception as e:
+        logger.error(f"Login route error: {e}")
+        flash('An error occurred during login. Please try again.', 'danger')
+        return render_template('login.html')
 
 @app.route('/logout')
 def logout():
     session.pop('user_id', None)
     session.pop('role', None)
     flash('You have been logged out.', 'success')
+    logger.info("User logged out")
     return redirect(url_for('login'))
 
 @app.route('/', methods=['GET', 'POST'])
@@ -250,7 +288,7 @@ def index():
         total_spent = 0.0
         remaining = 0.0
     finally:
-        conn.close()
+        release_db_connection(conn)
 
     return render_template('index.html', budget=budget, latest_dinner=latest_dinner, total_spent=total_spent, 
                          remaining=remaining, role=session.get('role'), today=datetime.now().strftime('%Y-%m-%d'))
@@ -352,7 +390,7 @@ def records():
         month_spent = 0.0
         threshold_alert = False
     finally:
-        conn.close()
+        release_db_connection(conn)
 
     return render_template('records.html', dinners=dinners, role=session.get('role'), 
                          week_spent=week_spent, month_spent=month_spent, threshold_alert=threshold_alert,
@@ -372,7 +410,7 @@ def delete(dinner_id):
         logger.error(f"Delete route error: {e}")
         flash('Error deleting dinner.', 'danger')
     finally:
-        conn.close()
+        release_db_connection(conn)
     return redirect(request.referrer or url_for('index'))
 
 @app.route('/export', methods=['GET'])
@@ -388,7 +426,7 @@ def export():
         flash('Error exporting data.', 'danger')
         dinners = []
     finally:
-        conn.close()
+        release_db_connection(conn)
 
     output = io.StringIO()
     writer = csv.writer(output)
