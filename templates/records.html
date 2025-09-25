@@ -91,7 +91,7 @@
                     {% if role == 'admin' %}
                     <td>
                         <button type="button" class="btn btn-outline-primary btn-touch btn-sm me-2" data-bs-toggle="modal" data-bs-target="#editDinnerModal{{ dinner[0] }}">Edit</button>
-                        <form method="POST" action="{{ url_for('delete', dinner_id=dinner[0]) }}" style="display:inline;">
+                        <form method="POST" action="{{ url_for('delete', dinner_id=dinner[0]) }}" style="display:inline;" onsubmit="return confirm('Are you sure you want to delete this dinner?');">
                             <button type="submit" class="btn btn-outline-danger btn-touch btn-sm">Delete</button>
                         </form>
                     </td>
@@ -151,3 +151,4 @@
     </script>
 </body>
 </html>
+```
