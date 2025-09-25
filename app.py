@@ -30,7 +30,7 @@ USERS = {
 
 # Database setup
 def init_db():
-    conn = sqlite3.connect('database.db')
+    conn = sqlite3.connect('/tmp/database.db')
     cursor = conn.cursor()
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS budget (
@@ -91,7 +91,7 @@ def admin_required(f):
         if 'user_id' not in session:
             flash('Please log in to access the app.', 'warning')
             return redirect(url_for('login'))
-        conn = sqlite3.connect('database.db')
+        conn = sqlite3.connect('/tmp/database.db')
         cursor = conn.cursor()
         cursor.execute('SELECT role FROM users WHERE id = ?', (session['user_id'],))
         role = cursor.fetchone()
@@ -128,7 +128,7 @@ def logout():
 @app.route('/', methods=['GET', 'POST'])
 @login_required
 def index():
-    conn = sqlite3.connect('database.db')
+    conn = sqlite3.connect('/tmp/database.db')
     cursor = conn.cursor()
 
     if request.method == 'POST':
@@ -227,7 +227,7 @@ def index():
 @app.route('/records', methods=['GET', 'POST'])
 @login_required
 def records():
-    conn = sqlite3.connect('database.db')
+    conn = sqlite3.connect('/tmp/database.db')
     cursor = conn.cursor()
 
     # Initialize filters
@@ -311,7 +311,7 @@ def records():
 @app.route('/delete/<int:dinner_id>', methods=['POST'])
 @admin_required
 def delete(dinner_id):
-    conn = sqlite3.connect('database.db')
+    conn = sqlite3.connect('/tmp/database.db')
     cursor = conn.cursor()
     cursor.execute('DELETE FROM dinners WHERE id = ?', (dinner_id,))
     conn.commit()
@@ -322,7 +322,7 @@ def delete(dinner_id):
 @app.route('/export', methods=['GET'])
 @admin_required
 def export():
-    conn = sqlite3.connect('database.db')
+    conn = sqlite3.connect('/tmp/database.db')
     cursor = conn.cursor()
     cursor.execute('SELECT description, amount, date FROM dinners ORDER BY date DESC')
     dinners = cursor.fetchall()
@@ -342,5 +342,7 @@ def export():
         download_name=f'dinner_records_{datetime.now().strftime("%Y%m%d")}.csv'
     )
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     app.run(debug=True)
+else:
+    application = app  # For WSGI compatibility
