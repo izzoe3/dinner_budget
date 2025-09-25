@@ -1,10 +1,8 @@
-
 import os
 import sqlite3
 from flask import Flask, render_template, request, redirect, url_for, session, flash, send_file
 from flask_bcrypt import Bcrypt
 from dotenv import load_dotenv
-from cloudflare import Cloudflare
 from datetime import datetime, timedelta
 import io
 import csv
@@ -30,34 +28,25 @@ USERS = {
     }
 }
 
-# Cloudflare D1 connection for production
-D1_API_KEY = os.getenv('D1_API_KEY')
-D1_DATABASE_ID = os.getenv('D1_DATABASE_ID')
+# Database connection
+D1_DATABASE_NAME = os.getenv('D1_DATABASE_NAME', 'dinner-budget-db')
 
 def get_db_connection():
     if os.getenv('VERCEL_ENV') == 'production':
-        client = Cloudflare(api_token=D1_API_KEY)
-        return client.d1.database.with_raw_response(D1_DATABASE_ID)
+        # Vercel provides D1 binding via request.env in serverless functions
+        # Handled in routes to access request.env
+        return None
     else:
-        # Fallback to local SQLite for testing
+        # Local SQLite
         return sqlite3.connect('/tmp/database.db')
 
 # Database setup
 def init_db():
     conn = get_db_connection()
     if os.getenv('VERCEL_ENV') == 'production':
-        # D1 queries
-        conn.query('CREATE TABLE IF NOT EXISTS budget (id INTEGER PRIMARY KEY, amount REAL NOT NULL)')
-        conn.query('CREATE TABLE IF NOT EXISTS dinners (id INTEGER PRIMARY KEY AUTOINCREMENT, description TEXT NOT NULL, amount REAL NOT NULL, date TEXT NOT NULL)')
-        conn.query('CREATE TABLE IF NOT EXISTS archived_dinners (id INTEGER PRIMARY KEY AUTOINCREMENT, description TEXT NOT NULL, amount REAL NOT NULL, date TEXT NOT NULL, archive_date TEXT NOT NULL)')
-        conn.query('CREATE TABLE IF NOT EXISTS users (id INTEGER PRIMARY KEY, role TEXT NOT NULL)')
-        result = conn.query('SELECT * FROM budget')
-        if not result:
-            conn.query('INSERT INTO budget (amount) VALUES (0)')
-        result = conn.query('SELECT * FROM users')
-        if not result:
-            conn.query('INSERT INTO users (id, role) VALUES (?, ?)', (1, 'admin'))
-            conn.query('INSERT INTO users (id, role) VALUES (?, ?)', (2, 'viewer'))
+        # In production, database is initialized via Vercel CLI or dashboard
+        # Ensure tables exist (run once via dashboard or CLI)
+        pass
     else:
         # Local SQLite
         cursor = conn.cursor()
@@ -73,7 +62,7 @@ def init_db():
             cursor.execute('INSERT INTO users (id, role) VALUES (?, ?)', (1, 'admin'))
             cursor.execute('INSERT INTO users (id, role) VALUES (?, ?)', (2, 'viewer'))
         conn.commit()
-    conn.close()
+        conn.close()
 
 init_db()
 
@@ -93,15 +82,16 @@ def admin_required(f):
         if 'user_id' not in session:
             flash('Please log in to access the app.', 'warning')
             return redirect(url_for('login'))
-        conn = get_db_connection()
         if os.getenv('VERCEL_ENV') == 'production':
-            result = conn.query('SELECT role FROM users WHERE id = ?', (session['user_id'],))
-            role = result.fetchone()
+            db = kwargs.get('env').get(D1_DATABASE_NAME)
+            result = db.prepare('SELECT role FROM users WHERE id = ?').bind(session['user_id']).run()
+            role = result.results[0] if result.results else None
         else:
+            conn = get_db_connection()
             cursor = conn.cursor()
             cursor.execute('SELECT role FROM users WHERE id = ?', (session['user_id'],))
             role = cursor.fetchone()
-        conn.close()
+            conn.close()
         if not role or role[0] != 'admin':
             flash('Access denied: Admin privileges required.', 'danger')
             return redirect(url_for('index'))
@@ -132,10 +122,9 @@ def logout():
     return redirect(url_for('login'))
 
 @app.route('/', methods=['GET', 'POST'])
-@login_required
-def index():
-    conn = get_db_connection()
+def index(env=None):
     if os.getenv('VERCEL_ENV') == 'production':
+        db = env.get(D1_DATABASE_NAME)
         if request.method == 'POST':
             if 'set_budget' in request.form:
                 if session.get('role') != 'admin':
@@ -146,7 +135,7 @@ def index():
                         if budget < 0:
                             flash('Budget cannot be negative.', 'danger')
                         else:
-                            conn.query('UPDATE budget SET amount = ?', (budget,))
+                            db.prepare('UPDATE budget SET amount = ?').bind(budget).run()
                             flash('Budget updated successfully.', 'success')
                     except ValueError:
                         flash('Invalid budget amount.', 'danger')
@@ -166,8 +155,8 @@ def index():
                                 date = request.form['date']
                                 try:
                                     datetime.strptime(date, '%Y-%m-%d')
-                                    conn.query('INSERT INTO dinners (description, amount, date) VALUES (?, ?, ?)', 
-                                              (description, amount, date))
+                                    db.prepare('INSERT INTO dinners (description, amount, date) VALUES (?, ?, ?)') \
+                                      .bind(description, amount, date).run()
                                     flash('Dinner added successfully.', 'success')
                                 except ValueError:
                                     flash('Invalid date format.', 'danger')
@@ -190,8 +179,8 @@ def index():
                                 date = request.form['date']
                                 try:
                                     datetime.strptime(date, '%Y-%m-%d')
-                                    conn.query('UPDATE dinners SET description = ?, amount = ?, date = ? WHERE id = ?', 
-                                              (description, amount, date, dinner_id))
+                                    db.prepare('UPDATE dinners SET description = ?, amount = ?, date = ? WHERE id = ?') \
+                                      .bind(description, amount, date, dinner_id).run()
                                     flash('Dinner updated successfully.', 'success')
                                 except ValueError:
                                     flash('Invalid date format.', 'danger')
@@ -207,21 +196,22 @@ def index():
                             flash('New budget cannot be negative.', 'danger')
                         else:
                             archive_date = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-                            conn.query('INSERT INTO archived_dinners (description, amount, date, archive_date) '
-                                      'SELECT description, amount, date, ? FROM dinners', (archive_date,))
-                            conn.query('DELETE FROM dinners')
-                            conn.query('UPDATE budget SET amount = ?', (new_budget,))
+                            db.prepare('INSERT INTO archived_dinners (description, amount, date, archive_date) ' +
+                                      'SELECT description, amount, date, ? FROM dinners').bind(archive_date).run()
+                            db.prepare('DELETE FROM dinners').run()
+                            db.prepare('UPDATE budget SET amount = ?').bind(new_budget).run()
                             flash('Budget reset and dinners archived successfully.', 'success')
                     except ValueError:
                         flash('Invalid new budget amount.', 'danger')
         # Fetch data
-        result = conn.query('SELECT amount FROM budget')
-        budget = result.fetchone()[0]
-        result = conn.query('SELECT id, description, amount, date FROM dinners ORDER BY date DESC LIMIT 1')
-        latest_dinner = result.fetchone()
-        result = conn.query('SELECT SUM(amount) FROM dinners')
-        total_spent = result.fetchone()[0] or 0
+        result = db.prepare('SELECT amount FROM budget').run()
+        budget = result.results[0]['amount'] if result.results else 0
+        result = db.prepare('SELECT id, description, amount, date FROM dinners ORDER BY date DESC LIMIT 1').run()
+        latest_dinner = result.results[0] if result.results else None
+        result = db.prepare('SELECT SUM(amount) as total FROM dinners').run()
+        total_spent = result.results[0]['total'] if result.results and result.results[0]['total'] else 0
     else:
+        conn = get_db_connection()
         cursor = conn.cursor()
         if request.method == 'POST':
             if 'set_budget' in request.form:
@@ -309,16 +299,15 @@ def index():
         latest_dinner = cursor.fetchone()
         cursor.execute('SELECT SUM(amount) FROM dinners')
         total_spent = cursor.fetchone()[0] or 0
+        conn.close()
     remaining = budget - total_spent
-    conn.close()
     return render_template('index.html', budget=budget, latest_dinner=latest_dinner, total_spent=total_spent, 
                          remaining=remaining, role=session.get('role'), today=datetime.now().strftime('%Y-%m-%d'))
 
 @app.route('/records', methods=['GET', 'POST'])
-@login_required
-def records():
-    conn = get_db_connection()
+def records(env=None):
     if os.getenv('VERCEL_ENV') == 'production':
+        db = env.get(D1_DATABASE_NAME)
         # Initialize filters
         description_filter = request.form.get('description', '') if request.method == 'POST' else ''
         date_from = request.form.get('date_from', '') if request.method == 'POST' else ''
@@ -363,8 +352,8 @@ def records():
                             date = request.form['date']
                             try:
                                 datetime.strptime(date, '%Y-%m-%d')
-                                conn.query('UPDATE dinners SET description = ?, amount = ?, date = ? WHERE id = ?', 
-                                          (description, amount, date, dinner_id))
+                                db.prepare('UPDATE dinners SET description = ?, amount = ?, date = ? WHERE id = ?') \
+                                  .bind(description, amount, date, dinner_id).run()
                                 flash('Dinner updated successfully.', 'success')
                             except ValueError:
                                 flash('Invalid date format.', 'danger')
@@ -372,24 +361,25 @@ def records():
                         flash('Invalid dinner amount.', 'danger')
 
         # Fetch dinners with filters
-        result = conn.query(query, params)
-        dinners = result.fetchall()
+        result = db.prepare(query).bind(*params).run()
+        dinners = result.results
 
         # Spending summary
         today = datetime.now()
         week_start = (today - timedelta(days=today.weekday())).strftime('%Y-%m-%d')
         month_start = today.replace(day=1).strftime('%Y-%m-%d')
-        result = conn.query('SELECT SUM(amount) FROM dinners WHERE date >= ?', (week_start,))
-        week_spent = result.fetchone()[0] or 0
-        result = conn.query('SELECT SUM(amount) FROM dinners WHERE date >= ?', (month_start,))
-        month_spent = result.fetchone()[0] or 0
+        result = db.prepare('SELECT SUM(amount) as total FROM dinners WHERE date >= ?').bind(week_start).run()
+        week_spent = result.results[0]['total'] if result.results and result.results[0]['total'] else 0
+        result = db.prepare('SELECT SUM(amount) as total FROM dinners WHERE date >= ?').bind(month_start).run()
+        month_spent = result.results[0]['total'] if result.results and result.results[0]['total'] else 0
 
         # Budget threshold check
-        result = conn.query('SELECT amount FROM budget')
-        budget = result.fetchone()[0]
-        result = conn.query('SELECT SUM(amount) FROM dinners')
-        total_spent = result.fetchone()[0] or 0
+        result = db.prepare('SELECT amount FROM budget').run()
+        budget = result.results[0]['amount'] if result.results else 0
+        result = db.prepare('SELECT SUM(amount) as total FROM dinners').run()
+        total_spent = result.results[0]['total'] if result.results and result.results[0]['total'] else 0
     else:
+        conn = get_db_connection()
         cursor = conn.cursor()
         # Initialize filters
         description_filter = request.form.get('description', '') if request.method == 'POST' else ''
@@ -462,45 +452,49 @@ def records():
         budget = cursor.fetchone()[0]
         cursor.execute('SELECT SUM(amount) FROM dinners')
         total_spent = cursor.fetchone()[0] or 0
+        conn.close()
     remaining = budget - total_spent
     threshold_alert = remaining < (budget * 0.2) and budget > 0
-    conn.close()
     return render_template('records.html', dinners=dinners, role=session.get('role'), 
                          week_spent=week_spent, month_spent=month_spent, threshold_alert=threshold_alert,
                          description_filter=description_filter, date_from=date_from, date_to=date_to)
 
 @app.route('/delete/<int:dinner_id>', methods=['POST'])
 @admin_required
-def delete(dinner_id):
-    conn = get_db_connection()
+def delete(dinner_id, env=None):
     if os.getenv('VERCEL_ENV') == 'production':
-        conn.query('DELETE FROM dinners WHERE id = ?', (dinner_id,))
+        db = env.get(D1_DATABASE_NAME)
+        db.prepare('DELETE FROM dinners WHERE id = ?').bind(dinner_id).run()
     else:
+        conn = get_db_connection()
         cursor = conn.cursor()
         cursor.execute('DELETE FROM dinners WHERE id = ?', (dinner_id,))
         conn.commit()
-    conn.close()
+        conn.close()
     flash('Dinner deleted successfully.', 'success')
     return redirect(request.referrer or url_for('index'))
 
 @app.route('/export', methods=['GET'])
 @admin_required
-def export():
-    conn = get_db_connection()
+def export(env=None):
     if os.getenv('VERCEL_ENV') == 'production':
-        result = conn.query('SELECT description, amount, date FROM dinners ORDER BY date DESC')
-        dinners = result.fetchall()
+        db = env.get(D1_DATABASE_NAME)
+        result = db.prepare('SELECT description, amount, date FROM dinners ORDER BY date DESC').run()
+        dinners = result.results
     else:
+        conn = get_db_connection()
         cursor = conn.cursor()
         cursor.execute('SELECT description, amount, date FROM dinners ORDER BY date DESC')
         dinners = cursor.fetchall()
-    conn.close()
+        conn.close()
 
     output = io.StringIO()
     writer = csv.writer(output)
     writer.writerow(['Description', 'Amount (RM)', 'Date'])
     for dinner in dinners:
-        writer.writerow([dinner[0], f"{dinner[1]:.2f}", dinner[2]])
+        writer.writerow([dinner['description'] if os.getenv('VERCEL_ENV') == 'production' else dinner[0], 
+                        f"{dinner['amount'] if os.getenv('VERCEL_ENV') == 'production' else dinner[1]:.2f}", 
+                        dinner['date'] if os.getenv('VERCEL_ENV') == 'production' else dinner[2]])
 
     output.seek(0)
     return send_file(
@@ -509,6 +503,12 @@ def export():
         as_attachment=True,
         download_name=f'dinner_records_{datetime.now().strftime("%Y%m%d")}.csv'
     )
+
+# Vercel serverless function handler
+def handler(request):
+    app.config['SERVER_NAME'] = request.headers.get('host')
+    with app.request_context(request.environ):
+        return app.full_dispatch_request()
 
 if __name__ == "__main__":
     app.run(debug=True)

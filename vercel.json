@@ -12,7 +12,10 @@
   "routes": [
     {
       "src": "/(.*)",
-      "dest": "app.py"
+      "dest": "/app.py"
     }
-  ]
+  ],
+  "env": {
+    "D1_DATABASE_NAME": "dinner-budget-db"
+  }
 }
