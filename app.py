@@ -2,7 +2,7 @@ import os
 import sqlite3
 import psycopg2
 from psycopg2 import pool
-from flask import Flask, render_template, request, redirect, url_for, session, flash, send_file
+from flask import Flask, render_template, request, redirect, url_for, session, flash, send_file, g
 from flask_bcrypt import Bcrypt
 from dotenv import load_dotenv
 from datetime import datetime, timedelta
@@ -19,6 +19,7 @@ load_dotenv()
 
 app = Flask(__name__)
 app.secret_key = os.getenv('SECRET_KEY', 'your-secret-key')  # Fallback for local testing
+app.permanent_session_lifetime = timedelta(days=7)  # Set session lifetime to 7 days
 bcrypt = Bcrypt(app)
 
 # Environment-based user credentials
@@ -88,7 +89,7 @@ def init_db():
         pass
     else:
         cursor.execute('CREATE TABLE IF NOT EXISTS budget (id INTEGER PRIMARY KEY, amount REAL NOT NULL)')
-        cursor.execute('CREATE TABLE IF NOT EXISTS dinners (id INTEGER PRIMARY KEY AUTOINCREMENT, description TEXT NOT NULL, amount REAL NOT NULL, date TEXT NOT NULL)')
+        cursor.execute('CREATE TABLE IF NOT EXISTS dinners (id INTEGER PRIMARY KEY AUTOINCREMENT, description TEXT NOT NULL, amount REAL NOT NULL, date TEXT NOT NULL, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)')
         cursor.execute('CREATE TABLE IF NOT EXISTS archived_dinners (id INTEGER PRIMARY KEY AUTOINCREMENT, description TEXT NOT NULL, amount REAL NOT NULL, date TEXT NOT NULL, archive_date TEXT NOT NULL)')
         cursor.execute('CREATE TABLE IF NOT EXISTS users (id INTEGER PRIMARY KEY, role TEXT NOT NULL)')
         cursor.execute('INSERT OR IGNORE INTO budget (id, amount) VALUES (1, 0)')
@@ -141,9 +142,18 @@ def admin_required(f):
     wrap.__name__ = f.__name__
     return wrap
 
+@app.before_request
+def clear_flash_messages():
+    """Clear flash messages before rendering templates to prevent duplicates."""
+    if request.endpoint not in ['login', 'logout']:  # Skip for login/logout routes
+        session.pop('_flashes', None)  # Clear flash messages
+
 @app.route('/login', methods=['GET', 'POST'])
 def login():
     try:
+        # Clear flash messages on GET to prevent stale messages
+        if request.method == 'GET':
+            session.pop('_flashes', None)
         if request.method == 'POST':
             username = request.form.get('username', '').strip()
             password = request.form.get('password', '')
@@ -156,6 +166,7 @@ def login():
             if user and user.get('password') and bcrypt.check_password_hash(user['password'], password):
                 session['user_id'] = user['id']
                 session['role'] = user['role']
+                session.permanent = True  # Make session persistent
                 flash('Login successful!', 'success')
                 logger.info(f"Successful login for user: {username}")
                 return redirect(url_for('index'))
@@ -172,6 +183,7 @@ def login():
 def logout():
     session.pop('user_id', None)
     session.pop('role', None)
+    session.pop('_flashes', None)  # Clear flash messages on logout
     flash('You have been logged out.', 'success')
     logger.info("User logged out")
     return redirect(url_for('login'))
@@ -215,10 +227,20 @@ def index():
                                 date = request.form['date']
                                 try:
                                     datetime.strptime(date, '%Y-%m-%d')
-                                    cursor.execute(f'INSERT INTO dinners (description, amount, date) VALUES ({placeholder}, {placeholder}, {placeholder})', 
-                                                 (description, amount, date))
-                                    conn.commit()
-                                    flash('Dinner added successfully.', 'success')
+                                    # Check for duplicate submission
+                                    cursor.execute(
+                                        f'SELECT id FROM dinners WHERE description = {placeholder} AND amount = {placeholder} AND date = {placeholder} AND created_at > {placeholder}',
+                                        (description, amount, date, (datetime.now() - timedelta(seconds=5)).strftime('%Y-%m-%d %H:%M:%S'))
+                                    )
+                                    if cursor.fetchone():
+                                        flash('Duplicate dinner submission detected.', 'warning')
+                                    else:
+                                        cursor.execute(
+                                            f'INSERT INTO dinners (description, amount, date) VALUES ({placeholder}, {placeholder}, {placeholder})',
+                                            (description, amount, date)
+                                        )
+                                        conn.commit()
+                                        flash('Dinner added successfully.', 'success')
                                 except ValueError:
                                     flash('Invalid date format.', 'danger')
                         except ValueError:
@@ -326,7 +348,7 @@ def records():
                 params.append(date_to)
             except ValueError:
                 flash('Invalid end date format.', 'danger')
-        query += ' ORDER BY date DESC'
+        query += ' ORDER BY DATE(date) DESC, created_at DESC'
 
         if request.method == 'POST' and 'edit_dinner' in request.form:
             if session.get('role') != 'admin':
