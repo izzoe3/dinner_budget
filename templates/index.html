@@ -104,14 +104,16 @@
         {% if role == 'admin' %}
         <form method="POST" class="mb-4" id="addDinnerForm">
             <div class="mb-3">
-                <input type="text" name="description" class="form-control" placeholder="Dinner description" maxlength="100" required>
+                <label for="description" class="form-label">Dinner Description</label>
+                <input type="text" name="description" id="description" class="form-control" placeholder="Enter dinner description" maxlength="100" required>
             </div>
             <div class="mb-3">
-                <input type="number" name="amount" class="form-control" placeholder="Amount" step="0.01" min="0.01" required>
+                <label for="amount" class="form-label">Amount</label>
+                <input type="number" name="amount" id="amount" class="form-control" placeholder="Enter amount" step="0.01" min="0.01" required>
             </div>
             <div class="mb-3">
                 <label for="date" class="form-label">Date</label>
-                <input type="date" name="date" class="form-control" value="{{ today }}" required>
+                <input type="date" name="date" id="date" class="form-control" value="{{ today }}" required>
             </div>
             <button type="submit" name="add_dinner" class="btn btn-primary btn-touch w-100" id="addDinnerButton">Add Dinner</button>
         </form>
@@ -178,31 +180,38 @@
     </div>
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
     <script>
+        console.log('Script loaded');
         document.addEventListener('DOMContentLoaded', function () {
-            // Auto-dismiss toasts after 5 seconds
+            console.log('DOM fully loaded');
+            const form = document.getElementById('addDinnerForm');
+            const submitButton = document.getElementById('addDinnerButton');
+            console.log('Form element:', form);
+            console.log('Submit button:', submitButton);
+            if (form && submitButton) {
+                form.addEventListener('submit', function (event) {
+                    event.preventDefault(); // Prevent default to debug
+                    const formData = new FormData(form);
+                    console.log('Submitting Add Dinner form:', Object.fromEntries(formData));
+                    submitButton.disabled = true;
+                    submitButton.textContent = 'Submitting...';
+                    // Fallback to default form submission
+                    form.submit();
+                });
+            } else {
+                console.error('Form or submit button not found');
+            }
+
+            // Ensure toasts are shown
             const toasts = document.querySelectorAll('.toast');
+            console.log('Toasts found:', toasts.length);
             toasts.forEach(toast => {
+                console.log('Showing toast:', toast);
                 const bsToast = new bootstrap.Toast(toast, {
-                    delay: 5000, // Dismiss after 5 seconds
+                    delay: 5000,
                     autohide: true
                 });
                 bsToast.show();
             });
-
-            // Prevent multiple form submissions and handle errors
-            const form = document.getElementById('addDinnerForm');
-            const submitButton = document.getElementById('addDinnerButton');
-            if (form && submitButton) {
-                form.addEventListener('submit', function (event) {
-                    submitButton.disabled = true;
-                    submitButton.textContent = 'Submitting...';
-                    // Re-enable button if submission fails (e.g., server error)
-                    setTimeout(() => {
-                        submitButton.disabled = false;
-                        submitButton.textContent = 'Add Dinner';
-                    }, 5000); // Adjust timeout for Vercel latency
-                });
-            }
         });
     </script>
 </body>

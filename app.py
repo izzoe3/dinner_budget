@@ -2,7 +2,7 @@ import os
 import sqlite3
 import psycopg2
 from psycopg2 import pool
-from flask import Flask, render_template, request, redirect, url_for, session, flash, send_file, g
+from flask import Flask, render_template, request, redirect, url_for, session, flash, send_file
 from flask_bcrypt import Bcrypt
 from dotenv import load_dotenv
 from datetime import datetime, timedelta
@@ -85,7 +85,6 @@ def init_db():
     conn = get_db_connection()
     cursor = conn.cursor()
     if os.getenv('VERCEL_ENV') == 'production' and POSTGRES_URL:
-        # Check if created_at exists in dinners table
         cursor.execute("SELECT column_name FROM information_schema.columns WHERE table_name = 'dinners' AND column_name = 'created_at'")
         if not cursor.fetchone():
             logger.warning("created_at column missing in dinners table; adding now")
@@ -97,6 +96,8 @@ def init_db():
         cursor.execute('CREATE TABLE IF NOT EXISTS archived_dinners (id INTEGER PRIMARY KEY AUTOINCREMENT, description TEXT NOT NULL, amount REAL NOT NULL, date TEXT NOT NULL, archive_date TEXT NOT NULL)')
         cursor.execute('CREATE TABLE IF NOT EXISTS users (id INTEGER PRIMARY KEY, role TEXT NOT NULL)')
         cursor.execute('INSERT OR IGNORE INTO budget (id, amount) VALUES (1, 0)')
+        cursor.execute('INSERT OR IGNORE INTO users (id, role) VALUES (1, "admin")')
+        cursor.execute('INSERT OR IGNORE INTO users (id, role) VALUES (2, "viewer")')
         conn.commit()
     release_db_connection(conn)
 
@@ -106,7 +107,6 @@ except Exception as e:
     logger.error(f"Database initialization error: {e}")
 
 def get_placeholder(conn):
-    """Return appropriate placeholder for the database type."""
     if isinstance(conn, sqlite3.Connection):
         return '?'
     return '%s'
@@ -148,14 +148,12 @@ def admin_required(f):
 
 @app.before_request
 def clear_flash_messages():
-    """Clear flash messages before rendering templates to prevent duplicates."""
-    if request.endpoint not in ['login', 'logout']:  # Skip for login/logout routes
-        session.pop('_flashes', None)  # Clear flash messages
+    if request.endpoint not in ['login', 'logout']:
+        session.pop('_flashes', None)
 
 @app.route('/login', methods=['GET', 'POST'])
 def login():
     try:
-        # Clear flash messages on GET to prevent stale messages
         if request.method == 'GET':
             session.pop('_flashes', None)
         if request.method == 'POST':
@@ -170,7 +168,7 @@ def login():
             if user and user.get('password') and bcrypt.check_password_hash(user['password'], password):
                 session['user_id'] = user['id']
                 session['role'] = user['role']
-                session.permanent = True  # Make session persistent
+                session.permanent = True
                 flash('Login successful!', 'success')
                 logger.info(f"Successful login for user: {username}")
                 return redirect(url_for('index'))
@@ -187,7 +185,7 @@ def login():
 def logout():
     session.pop('user_id', None)
     session.pop('role', None)
-    session.pop('_flashes', None)  # Clear flash messages on logout
+    session.pop('_flashes', None)
     flash('You have been logged out.', 'success')
     logger.info("User logged out")
     return redirect(url_for('login'))
@@ -200,90 +198,116 @@ def index():
     placeholder = get_placeholder(conn)
 
     try:
+        logger.debug(f"Session data: user_id={session.get('user_id')}, role={session.get('role')}")
         if request.method == 'POST':
+            logger.debug(f"POST request received: {request.form}")
             if 'set_budget' in request.form:
                 if session.get('role') != 'admin':
                     flash('Access denied: Admin privileges required.', 'danger')
+                    logger.warning("Non-admin attempted to set budget")
                 else:
                     try:
-                        budget = float(request.form['budget'])
+                        budget = float(request.form.get('budget', ''))
                         if budget < 0:
                             flash('Budget cannot be negative.', 'danger')
                         else:
                             cursor.execute(f'UPDATE budget SET amount = {placeholder} WHERE id = 1', (budget,))
                             conn.commit()
                             flash('Budget updated successfully.', 'success')
+                            logger.info(f"Budget updated to {budget}")
                     except ValueError:
                         flash('Invalid budget amount.', 'danger')
+                        logger.error(f"Invalid budget amount: {request.form.get('budget')}")
                     except Exception as e:
-                        logger.error(f"Set budget error: {e}")
-                        flash('Database error updating budget.', 'danger')
+                        logger.error(f"Set budget error: {str(e)}")
+                        flash(f'Database error updating budget: {str(e)}', 'danger')
             elif 'add_dinner' in request.form:
+                logger.debug(f"Add dinner form data: {request.form}")
                 if session.get('role') != 'admin':
                     flash('Access denied: Admin privileges required.', 'danger')
+                    logger.warning("Non-admin attempted to add dinner")
                 else:
-                    description = request.form['description'].strip()
-                    if len(description) > 100:
+                    description = request.form.get('description', '').strip()
+                    amount_str = request.form.get('amount', '')
+                    date = request.form.get('date', '')
+                    logger.debug(f"Add dinner inputs: description={description}, amount={amount_str}, date={date}")
+                    if not description:
+                        flash('Description is required.', 'danger')
+                        logger.error("Missing description in add_dinner")
+                    elif len(description) > 100:
                         flash('Description cannot exceed 100 characters.', 'danger')
+                        logger.error(f"Description too long: {len(description)} characters")
+                    elif not amount_str:
+                        flash('Amount is required.', 'danger')
+                        logger.error("Missing amount in add_dinner")
+                    elif not date:
+                        flash('Date is required.', 'danger')
+                        logger.error("Missing date in add_dinner")
                     else:
                         try:
-                            amount = float(request.form['amount'])
+                            amount = float(amount_str)
                             if amount <= 0:
                                 flash('Dinner amount must be positive.', 'danger')
+                                logger.error(f"Invalid amount: {amount_str}")
                             else:
-                                date = request.form['date']
                                 try:
                                     datetime.strptime(date, '%Y-%m-%d')
-                                    # Check for duplicate submission (skip if created_at not available)
+                                    # Simplified duplicate check
                                     cursor.execute(
-                                        f"SELECT column_name FROM information_schema.columns WHERE table_name = 'dinners' AND column_name = 'created_at'"
-                                    ) if isinstance(conn, psycopg2.extensions.connection) else None
-                                    has_created_at = cursor.fetchone() if isinstance(conn, psycopg2.extensions.connection) else True
-                                    if has_created_at:
-                                        cursor.execute(
-                                            f'SELECT id FROM dinners WHERE description = {placeholder} AND amount = {placeholder} AND date = {placeholder} AND created_at > {placeholder}',
-                                            (description, amount, date, (datetime.now() - timedelta(seconds=5)).strftime('%Y-%m-%d %H:%M:%S'))
-                                        )
-                                        if cursor.fetchone():
-                                            flash('Duplicate dinner submission detected.', 'warning')
-                                            logger.warning(f"Duplicate dinner submission: {description}, {amount}, {date}")
-                                            return redirect(url_for('index'))
-                                    # Insert new dinner
-                                    cursor.execute(
-                                        f'INSERT INTO dinners (description, amount, date) VALUES ({placeholder}, {placeholder}, {placeholder})',
+                                        f'SELECT id FROM dinners WHERE description = {placeholder} AND amount = {placeholder} AND date = {placeholder}',
                                         (description, amount, date)
                                     )
-                                    conn.commit()
-                                    flash('Dinner added successfully.', 'success')
-                                    logger.info(f"Dinner added: {description}, {amount}, {date}")
+                                    if cursor.fetchone():
+                                        flash('Dinner already exists.', 'warning')
+                                        logger.warning(f"Duplicate dinner: {description}, {amount}, {date}")
+                                    else:
+                                        insert_query = (
+                                            f'INSERT INTO dinners (description, amount, date) VALUES ({placeholder}, {placeholder}, {placeholder})'
+                                            if isinstance(conn, sqlite3.Connection)
+                                            else f'INSERT INTO dinners (description, amount, date) VALUES ({placeholder}, {placeholder}, {placeholder}) ON CONFLICT DO NOTHING'
+                                        )
+                                        cursor.execute(insert_query, (description, amount, date))
+                                        if cursor.rowcount == 0 and isinstance(conn, psycopg2.extensions.connection):
+                                            flash('Dinner already exists or database conflict occurred.', 'warning')
+                                            logger.warning(f"Insert conflict: {description}, {amount}, {date}")
+                                        else:
+                                            conn.commit()
+                                            flash('Dinner added successfully.', 'success')
+                                            logger.info(f"Dinner added: {description}, {amount}, {date}")
                                 except ValueError:
                                     flash('Invalid date format.', 'danger')
                                     logger.error(f"Invalid date format: {date}")
                                 except Exception as e:
-                                    logger.error(f"Add dinner error: {e}")
-                                    flash('Database error adding dinner.', 'danger')
+                                    logger.error(f"Add dinner error: {str(e)}")
+                                    flash(f'Database error adding dinner: {str(e)}', 'danger')
                         except ValueError:
                             flash('Invalid dinner amount.', 'danger')
-                            logger.error(f"Invalid dinner amount: {request.form['amount']}")
+                            logger.error(f"Invalid dinner amount: {amount_str}")
             elif 'edit_dinner' in request.form:
                 if session.get('role') != 'admin':
                     flash('Access denied: Admin privileges required.', 'danger')
+                    logger.warning("Non-admin attempted to edit dinner")
                 else:
-                    dinner_id = request.form['dinner_id']
-                    description = request.form['description'].strip()
+                    dinner_id = request.form.get('dinner_id')
+                    description = request.form.get('description', '').strip()
+                    logger.debug(f"Edit dinner form data: id={dinner_id}, description={description}, amount={request.form.get('amount')}, date={request.form.get('date')}")
                     if len(description) > 100:
                         flash('Description cannot exceed 100 characters.', 'danger')
+                        logger.error(f"Description too long: {len(description)} characters")
                     else:
                         try:
-                            amount = float(request.form['amount'])
+                            amount = float(request.form.get('amount', ''))
                             if amount <= 0:
                                 flash('Dinner amount must be positive.', 'danger')
+                                logger.error(f"Invalid amount: {request.form.get('amount')}")
                             else:
-                                date = request.form['date']
+                                date = request.form.get('date', '')
                                 try:
                                     datetime.strptime(date, '%Y-%m-%d')
-                                    cursor.execute(f'UPDATE dinners SET description = {placeholder}, amount = {placeholder}, date = {placeholder} WHERE id = {placeholder}', 
-                                                 (description, amount, date, dinner_id))
+                                    cursor.execute(
+                                        f'UPDATE dinners SET description = {placeholder}, amount = {placeholder}, date = {placeholder} WHERE id = {placeholder}',
+                                        (description, amount, date, dinner_id)
+                                    )
                                     conn.commit()
                                     flash('Dinner updated successfully.', 'success')
                                     logger.info(f"Dinner updated: ID {dinner_id}, {description}, {amount}, {date}")
@@ -291,22 +315,27 @@ def index():
                                     flash('Invalid date format.', 'danger')
                                     logger.error(f"Invalid date format for edit: {date}")
                                 except Exception as e:
-                                    logger.error(f"Edit dinner error: {e}")
-                                    flash('Database error updating dinner.', 'danger')
+                                    logger.error(f"Edit dinner error: {str(e)}")
+                                    flash(f'Database error updating dinner: {str(e)}', 'danger')
                         except ValueError:
                             flash('Invalid dinner amount.', 'danger')
-                            logger.error(f"Invalid dinner amount for edit: {request.form['amount']}")
+                            logger.error(f"Invalid dinner amount for edit: {request.form.get('amount')}")
             elif 'reset_budget' in request.form:
                 if session.get('role') != 'admin':
                     flash('Access denied: Admin privileges required.', 'danger')
+                    logger.warning("Non-admin attempted to reset budget")
                 else:
                     try:
-                        new_budget = float(request.form['new_budget'])
+                        new_budget = float(request.form.get('new_budget', ''))
                         if new_budget < 0:
                             flash('New budget cannot be negative.', 'danger')
+                            logger.error(f"Invalid new budget: {request.form.get('new_budget')}")
                         else:
                             archive_date = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-                            cursor.execute(f'INSERT INTO archived_dinners (description, amount, date, archive_date) SELECT description, amount, date, {placeholder} FROM dinners', (archive_date,))
+                            cursor.execute(
+                                f'INSERT INTO archived_dinners (description, amount, date, archive_date) SELECT description, amount, date, {placeholder} FROM dinners',
+                                (archive_date,)
+                            )
                             cursor.execute('DELETE FROM dinners')
                             cursor.execute(f'UPDATE budget SET amount = {placeholder} WHERE id = 1', (new_budget,))
                             conn.commit()
@@ -314,12 +343,11 @@ def index():
                             logger.info(f"Budget reset to {new_budget}, dinners archived")
                     except ValueError:
                         flash('Invalid new budget amount.', 'danger')
-                        logger.error(f"Invalid new budget amount: {request.form['new_budget']}")
+                        logger.error(f"Invalid new budget amount: {request.form.get('new_budget')}")
                     except Exception as e:
-                        logger.error(f"Reset budget error: {e}")
-                        flash('Database error resetting budget.', 'danger')
+                        logger.error(f"Reset budget error: {str(e)}")
+                        flash(f'Database error resetting budget: {str(e)}', 'danger')
 
-        # Fetch data
         cursor.execute(f'SELECT amount FROM budget WHERE id = 1')
         budget_row = cursor.fetchone()
         budget = float(budget_row[0]) if budget_row else 0.0
@@ -334,8 +362,8 @@ def index():
         remaining = budget - total_spent
 
     except Exception as e:
-        logger.error(f"Index route error: {e}")
-        flash('Database error occurred.', 'danger')
+        logger.error(f"Index route error: {str(e)}")
+        flash(f'Database error occurred: {str(e)}', 'danger')
         budget = 0.0
         latest_dinner = None
         total_spent = 0.0
@@ -343,7 +371,7 @@ def index():
     finally:
         release_db_connection(conn)
 
-    return render_template('index.html', budget=budget, latest_dinner=latest_dinner, total_spent=total_spent, 
+    return render_template('index.html', budget=budget, latest_dinner=latest_dinner, total_spent=total_spent,
                          remaining=remaining, role=session.get('role'), today=datetime.now().strftime('%Y-%m-%d'))
 
 @app.route('/records', methods=['GET', 'POST'])
@@ -354,12 +382,10 @@ def records():
     placeholder = get_placeholder(conn)
 
     try:
-        # Initialize filters
         description_filter = request.form.get('description', '') if request.method == 'POST' else ''
         date_from = request.form.get('date_from', '') if request.method == 'POST' else ''
         date_to = request.form.get('date_to', '') if request.method == 'POST' else ''
 
-        # Build query
         query = 'SELECT id, description, amount, date FROM dinners WHERE 1=1'
         params = []
         if description_filter:
@@ -381,27 +407,32 @@ def records():
             except ValueError:
                 flash('Invalid end date format.', 'danger')
                 logger.error(f"Invalid end date format: {date_to}")
-        query += ' ORDER BY DATE(date) DESC'
+        query += ' ORDER BY date DESC'
 
         if request.method == 'POST' and 'edit_dinner' in request.form:
             if session.get('role') != 'admin':
                 flash('Access denied: Admin privileges required.', 'danger')
+                logger.warning("Non-admin attempted to edit dinner")
             else:
-                dinner_id = request.form['dinner_id']
-                description = request.form['description'].strip()
+                dinner_id = request.form.get('dinner_id')
+                description = request.form.get('description', '').strip()
                 if len(description) > 100:
                     flash('Description cannot exceed 100 characters.', 'danger')
+                    logger.error(f"Description too long: {len(description)} characters")
                 else:
                     try:
-                        amount = float(request.form['amount'])
+                        amount = float(request.form.get('amount', ''))
                         if amount <= 0:
                             flash('Dinner amount must be positive.', 'danger')
+                            logger.error(f"Invalid amount: {request.form.get('amount')}")
                         else:
-                            date = request.form['date']
+                            date = request.form.get('date', '')
                             try:
                                 datetime.strptime(date, '%Y-%m-%d')
-                                cursor.execute(f'UPDATE dinners SET description = {placeholder}, amount = {placeholder}, date = {placeholder} WHERE id = {placeholder}', 
-                                             (description, amount, date, dinner_id))
+                                cursor.execute(
+                                    f'UPDATE dinners SET description = {placeholder}, amount = {placeholder}, date = {placeholder} WHERE id = {placeholder}',
+                                    (description, amount, date, dinner_id)
+                                )
                                 conn.commit()
                                 flash('Dinner updated successfully.', 'success')
                                 logger.info(f"Dinner updated: ID {dinner_id}, {description}, {amount}, {date}")
@@ -409,17 +440,15 @@ def records():
                                 flash('Invalid date format.', 'danger')
                                 logger.error(f"Invalid date format for edit: {date}")
                             except Exception as e:
-                                logger.error(f"Edit dinner error: {e}")
-                                flash('Database error updating dinner.', 'danger')
+                                logger.error(f"Edit dinner error: {str(e)}")
+                                flash(f'Database error updating dinner: {str(e)}', 'danger')
                     except ValueError:
                         flash('Invalid dinner amount.', 'danger')
-                        logger.error(f"Invalid dinner amount for edit: {request.form['amount']}")
+                        logger.error(f"Invalid dinner amount for edit: {request.form.get('amount')}")
 
-        # Fetch dinners with filters
         cursor.execute(query, params)
         dinners = cursor.fetchall()
 
-        # Spending summary
         today = datetime.now()
         week_start = (today - timedelta(days=today.weekday())).strftime('%Y-%m-%d')
         month_start = today.replace(day=1).strftime('%Y-%m-%d')
@@ -431,7 +460,6 @@ def records():
         month_spent_row = cursor.fetchone()
         month_spent = float(month_spent_row[0]) if month_spent_row[0] is not None else 0.0
 
-        # Budget threshold check
         cursor.execute(f'SELECT amount FROM budget WHERE id = 1')
         budget_row = cursor.fetchone()
         budget = float(budget_row[0]) if budget_row else 0.0
@@ -444,8 +472,8 @@ def records():
         threshold_alert = remaining < (budget * 0.2) and budget > 0
 
     except Exception as e:
-        logger.error(f"Records route error: {e}")
-        flash('Database error occurred.', 'danger')
+        logger.error(f"Records route error: {str(e)}")
+        flash(f'Database error occurred: {str(e)}', 'danger')
         dinners = []
         week_spent = 0.0
         month_spent = 0.0
@@ -453,7 +481,7 @@ def records():
     finally:
         release_db_connection(conn)
 
-    return render_template('records.html', dinners=dinners, role=session.get('role'), 
+    return render_template('records.html', dinners=dinners, role=session.get('role'),
                          week_spent=week_spent, month_spent=month_spent, threshold_alert=threshold_alert,
                          description_filter=description_filter, date_from=date_from, date_to=date_to)
 
@@ -469,8 +497,8 @@ def delete(dinner_id):
         flash('Dinner deleted successfully.', 'success')
         logger.info(f"Dinner deleted: ID {dinner_id}")
     except Exception as e:
-        logger.error(f"Delete route error: {e}")
-        flash('Error deleting dinner.', 'danger')
+        logger.error(f"Delete route error: {str(e)}")
+        flash(f'Error deleting dinner: {str(e)}', 'danger')
     finally:
         release_db_connection(conn)
     return redirect(request.referrer or url_for('index'))
@@ -484,8 +512,8 @@ def export():
         cursor.execute('SELECT description, amount, date FROM dinners ORDER BY date DESC')
         dinners = cursor.fetchall()
     except Exception as e:
-        logger.error(f"Export route error: {e}")
-        flash('Error exporting data.', 'danger')
+        logger.error(f"Export route error: {str(e)}")
+        flash(f'Error exporting data: {str(e)}', 'danger')
         dinners = []
     finally:
         release_db_connection(conn)
@@ -507,4 +535,4 @@ def export():
 if __name__ == "__main__":
     app.run(debug=True)
 else:
-    application = app  # For WSGI compatibility
+    application = app
