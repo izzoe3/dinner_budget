@@ -30,7 +30,10 @@ logger = logging.getLogger(__name__)
 # Database setup
 def get_db_connection():
     if os.getenv('VERCEL_ENV'):
-        conn = psycopg2.connect(os.getenv('POSTGRES_URL'))
+        conn = psycopg2.connect(
+            os.getenv('POSTGRES_URL'),
+            sslmode='require'
+        )
     else:
         conn = sqlite3.connect('database.db')
         conn.row_factory = sqlite3.Row
@@ -102,7 +105,7 @@ def index():
             date = request.form['date']
             try:
                 if session['role'] == 'admin':
-                    cursor.execute('INSERT INTO dinners (description, amount, date, created_at) VALUES (?, ?, ?, ?)',
+                    cursor.execute('INSERT INTO dinners (description, amount, date, created_at) VALUES (%s, %s, %s, %s)' if os.getenv('VERCEL_ENV') else 'INSERT INTO dinners (description, amount, date, created_at) VALUES (?, ?, ?, ?)',
                                    (description, amount, date, datetime.now()))
                     conn.commit()
                     logger.info(f"Dinner added: {description}, {amount}, {date}")
@@ -117,9 +120,9 @@ def index():
         elif 'set_budget' in request.form and session['role'] == 'admin':
             budget = float(request.form['budget'])
             try:
-                cursor.execute('UPDATE budget SET amount = ? WHERE id = 1', (budget,))
+                cursor.execute('UPDATE budget SET amount = %s WHERE id = 1' if os.getenv('VERCEL_ENV') else 'UPDATE budget SET amount = ? WHERE id = 1', (budget,))
                 if cursor.rowcount == 0:
-                    cursor.execute('INSERT INTO budget (id, amount) VALUES (1, ?)', (budget,))
+                    cursor.execute('INSERT INTO budget (id, amount) VALUES (%s, %s)' if os.getenv('VERCEL_ENV') else 'INSERT INTO budget (id, amount) VALUES (?, ?)', (1, budget))
                 conn.commit()
                 logger.info(f"Budget updated to: {budget}")
                 flash('Budget updated successfully.', 'success')
@@ -130,11 +133,11 @@ def index():
         elif 'reset_budget' in request.form and session['role'] == 'admin':
             new_budget = float(request.form['new_budget'])
             try:
-                cursor.execute('INSERT INTO budget_history (amount, reset_date) SELECT amount, ? FROM budget WHERE id = 1', (datetime.now(),))
+                cursor.execute('INSERT INTO budget_history (amount, reset_date) SELECT amount, %s FROM budget WHERE id = 1' if os.getenv('VERCEL_ENV') else 'INSERT INTO budget_history (amount, reset_date) SELECT amount, ? FROM budget WHERE id = 1', (datetime.now(),))
                 cursor.execute('DELETE FROM dinners')
-                cursor.execute('UPDATE budget SET amount = ? WHERE id = 1', (new_budget,))
+                cursor.execute('UPDATE budget SET amount = %s WHERE id = 1' if os.getenv('VERCEL_ENV') else 'UPDATE budget SET amount = ? WHERE id = 1', (new_budget,))
                 if cursor.rowcount == 0:
-                    cursor.execute('INSERT INTO budget (id, amount) VALUES (1, ?)', (new_budget,))
+                    cursor.execute('INSERT INTO budget (id, amount) VALUES (%s, %s)' if os.getenv('VERCEL_ENV') else 'INSERT INTO budget (id, amount) VALUES (?, ?)', (1, new_budget))
                 conn.commit()
                 logger.info(f"Budget reset to: {new_budget}")
                 flash('Budget reset successfully.', 'success')
@@ -145,10 +148,10 @@ def index():
     # Fetch budget and dinner data
     cursor.execute('SELECT amount FROM budget WHERE id = 1')
     budget = cursor.fetchone()
-    budget = budget['amount'] if budget else 0.0
+    budget = budget[0] if budget else 0.0
 
     cursor.execute('SELECT SUM(amount) as total FROM dinners')
-    total_spent = cursor.fetchone()['total'] or 0.0
+    total_spent = cursor.fetchone()[0] or 0.0
     remaining = budget - total_spent
 
     cursor.execute('SELECT id, description, amount, date FROM dinners ORDER BY created_at DESC LIMIT 1')
@@ -169,7 +172,7 @@ def records():
     # Fetch budget
     cursor.execute('SELECT amount FROM budget WHERE id = 1')
     budget = cursor.fetchone()
-    budget = budget['amount'] if budget else 0.0
+    budget = budget[0] if budget else 0.0
 
     # Handle filtering
     description_filter = request.form.get('description', '')
@@ -180,13 +183,13 @@ def records():
     params = []
 
     if description_filter:
-        query += ' AND description LIKE ?'
+        query += ' AND description LIKE %s' if os.getenv('VERCEL_ENV') else ' AND description LIKE ?'
         params.append(f'%{description_filter}%')
     if date_from:
-        query += ' AND date >= ?'
+        query += ' AND date >= %s' if os.getenv('VERCEL_ENV') else ' AND date >= ?'
         params.append(date_from)
     if date_to:
-        query += ' AND date <= ?'
+        query += ' AND date <= %s' if os.getenv('VERCEL_ENV') else ' AND date <= ?'
         params.append(date_to)
 
     query += ' ORDER BY date DESC, created_at DESC'
@@ -194,11 +197,11 @@ def records():
     dinners = cursor.fetchall()
 
     # Calculate weekly and monthly spending
-    cursor.execute('SELECT SUM(amount) as total FROM dinners WHERE date >= ?', (datetime.now().strftime('%Y-%m-%d'),))
-    week_spent = cursor.fetchone()['total'] or 0.0
+    cursor.execute('SELECT SUM(amount) as total FROM dinners WHERE date >= %s' if os.getenv('VERCEL_ENV') else 'SELECT SUM(amount) as total FROM dinners WHERE date >= ?', (datetime.now().strftime('%Y-%m-%d'),))
+    week_spent = cursor.fetchone()[0] or 0.0
 
-    cursor.execute('SELECT SUM(amount) as total FROM dinners WHERE date >= ?', ((datetime.now().replace(day=1)).strftime('%Y-%m-%d'),))
-    month_spent = cursor.fetchone()['total'] or 0.0
+    cursor.execute('SELECT SUM(amount) as total FROM dinners WHERE date >= %s' if os.getenv('VERCEL_ENV') else 'SELECT SUM(amount) as total FROM dinners WHERE date >= ?', ((datetime.now().replace(day=1)).strftime('%Y-%m-%d'),))
+    month_spent = cursor.fetchone()[0] or 0.0
 
     threshold_alert = (budget - month_spent) < (budget * 0.2) if budget > 0 else False
 
@@ -219,7 +222,7 @@ def delete(dinner_id):
     conn = get_db_connection()
     cursor = conn.cursor()
     try:
-        cursor.execute('DELETE FROM dinners WHERE id = ?', (dinner_id,))
+        cursor.execute('DELETE FROM dinners WHERE id = %s' if os.getenv('VERCEL_ENV') else 'DELETE FROM dinners WHERE id = ?', (dinner_id,))
         conn.commit()
         logger.info(f"Dinner deleted: id={dinner_id}")
         flash('Dinner deleted successfully.', 'success')
@@ -248,7 +251,7 @@ def export():
     writer = csv.writer(output)
     writer.writerow(['Description', 'Amount', 'Date', 'Created At'])
     for dinner in dinners:
-        writer.writerow([dinner['description'], dinner['amount'], dinner['date'], dinner['created_at']])
+        writer.writerow([dinner[1], dinner[2], dinner[3], dinner[4]])
     
     output.seek(0)
     return send_file(
