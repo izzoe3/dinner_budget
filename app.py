@@ -14,6 +14,15 @@ app = Flask(__name__)
 bcrypt = Bcrypt(app)
 load_dotenv()
 
+# Configure secret key
+app.secret_key = os.getenv('SECRET_KEY')
+if not app.secret_key:
+    if os.getenv('VERCEL_ENV') == 'production':
+        raise RuntimeError("SECRET_KEY is not set in production environment")
+    else:
+        app.secret_key = 'temporary-secret-key-for-local-debugging'
+        logging.warning("Using temporary SECRET_KEY for local debugging. Set SECRET_KEY in .env for production.")
+
 # Configure logging
 logging.basicConfig(level=logging.DEBUG)
 logger = logging.getLogger(__name__)
@@ -250,5 +259,4 @@ def export():
     )
 
 if __name__ == '__main__':
-    app.secret_key = os.getenv('SECRET_KEY')
     app.run(debug=True)
