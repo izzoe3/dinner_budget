@@ -26,17 +26,20 @@
                         <div class="toast align-items-center text-bg-{{ 'success' if category == 'success' else 'danger' if category == 'danger' else 'warning' }} border-0" role="alert" aria-live="assertive" aria-atomic="true">
                             <div class="d-flex">
                                 <div class="toast-body">{{ message }}</div>
-                                <button type="button" class="btn-close btn-close-white me-2 m-auto" data-bs-dismiss="toast" aria-label="Close"></button>
+                                <button type="button" class="btn-close btn-close-white me-2 m-auto" style="z-index: 1000;" aria-label="Close"></button>
                             </div>
                         </div>
                     {% endfor %}
                 </div>
             {% endif %}
         {% endwith %}
+        <script>
+            console.log('Flash messages:', {{ get_flashed_messages(with_categories=true) | tojson }});
+        </script>
 
         <!-- Remaining Budget -->
         <div class="remaining-budget text-center mb-4">
-            <h2 class="display-4 fw-bold">RM {{ remaining|round(2) }}</h2>
+            <h2 class="display-4 fw-bold">RM {{ remaining|currency }}</h2>
             <p>Remaining Budget</p>
             {% if role == 'admin' %}
             <button type="button" class="btn btn-primary btn-touch mt-2 me-2" data-bs-toggle="modal" data-bs-target="#editBudgetModal">Edit Budget</button>
@@ -97,12 +100,13 @@
 
         <!-- Total Spent -->
         <div class="summary text-center mb-4">
-            <p><strong>Total Spent:</strong> RM {{ total_spent|round(2) }}</p>
+            <p><strong>Total Spent:</strong> RM {{ total_spent|currency }}</p>
         </div>
 
         <!-- Add Dinner -->
         {% if role == 'admin' %}
-        <form method="POST" class="mb-4" id="addDinnerForm">
+        <form method="POST" action="{{ url_for('index') }}" class="mb-4" id="addDinnerForm">
+            <input type="hidden" name="add_dinner" value="true">
             <div class="mb-3">
                 <label for="description" class="form-label">Dinner Description</label>
                 <input type="text" name="description" id="description" class="form-control" placeholder="Enter dinner description" maxlength="100" required>
@@ -115,7 +119,7 @@
                 <label for="date" class="form-label">Date</label>
                 <input type="date" name="date" id="date" class="form-control" value="{{ today }}" required>
             </div>
-            <button type="submit" name="add_dinner" class="btn btn-primary btn-touch w-100" id="addDinnerButton">Add Dinner</button>
+            <button type="submit" class="btn btn-primary btn-touch w-100" id="addDinnerButton">Add Dinner</button>
         </form>
         {% endif %}
 
@@ -130,7 +134,7 @@
                 <div class="card-body d-flex justify-content-between align-items-center">
                     <div>
                         <h6 class="card-title">{{ latest_dinner[1] }}</h6>
-                        <p class="card-text">RM {{ latest_dinner[2]|round(2) }} on {{ latest_dinner[3] }}</p>
+                        <p class="card-text">RM {{ latest_dinner[2]|currency }} on {{ latest_dinner[3] }}</p>
                     </div>
                     {% if role == 'admin' %}
                     <div>
@@ -160,7 +164,7 @@
                                 </div>
                                 <div class="mb-3">
                                     <label for="amount" class="form-label">Amount</label>
-                                    <input type="number" name="amount" class="form-control" value="{{ latest_dinner[2] }}" step="0.01" min="0.01" required>
+                                    <input type="number" name="amount" class="form-control" value="{{ latest_dinner[2]|currency }}" step="0.01" min="0.01" required>
                                 </div>
                                 <div class="mb-3">
                                     <label for="date" class="form-label">Date</label>
@@ -189,19 +193,22 @@
             console.log('Submit button:', submitButton);
             if (form && submitButton) {
                 form.addEventListener('submit', function (event) {
-                    event.preventDefault(); // Prevent default to debug
+                    console.log('Submit event triggered');
                     const formData = new FormData(form);
-                    console.log('Submitting Add Dinner form:', Object.fromEntries(formData));
+                    const data = Object.fromEntries(formData);
+                    console.log('Submitting Add Dinner form:', data);
                     submitButton.disabled = true;
                     submitButton.textContent = 'Submitting...';
-                    // Fallback to default form submission
-                    form.submit();
+                    setTimeout(() => {
+                        submitButton.disabled = false;
+                        submitButton.textContent = 'Add Dinner';
+                    }, 5000);
                 });
             } else {
                 console.error('Form or submit button not found');
             }
 
-            // Ensure toasts are shown
+            // Debug toasts
             const toasts = document.querySelectorAll('.toast');
             console.log('Toasts found:', toasts.length);
             toasts.forEach(toast => {
