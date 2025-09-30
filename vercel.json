@@ -1,12 +1,17 @@
 {
-  "version": 2,
+  "framework": null,
   "builds": [
     {
-      "src": "app.py",
-      "use": "@vercel/python",
-      "config": {
-        "maxLambdaSize": "15mb"
-      }
+      "src": "*.py",
+      "use": "@vercel/python"
+    },
+    {
+      "src": "static/**",
+      "use": "@vercel/static"
+    },
+    {
+      "src": "templates/**",
+      "use": "@vercel/static"
     }
   ],
   "routes": [
@@ -16,6 +21,17 @@
     }
   ],
   "env": {
-    "D1_DATABASE_NAME": "dinner-budget-db"
-  }
+    "FLASK_ENV": "production"
+  },
+  "headers": [
+    {
+      "source": "/(.*)",
+      "headers": [
+        {
+          "key": "Set-Cookie",
+          "value": "SameSite=Lax; Secure"
+        }
+      ]
+    }
+  ]
 }

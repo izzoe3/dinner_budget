@@ -102,7 +102,7 @@
 
         <!-- Add Dinner -->
         {% if role == 'admin' %}
-        <form method="POST" class="mb-4">
+        <form method="POST" class="mb-4" id="addDinnerForm">
             <div class="mb-3">
                 <input type="text" name="description" class="form-control" placeholder="Dinner description" maxlength="100" required>
             </div>
@@ -113,7 +113,7 @@
                 <label for="date" class="form-label">Date</label>
                 <input type="date" name="date" class="form-control" value="{{ today }}" required>
             </div>
-            <button type="submit" name="add_dinner" class="btn btn-primary btn-touch w-100">Add Dinner</button>
+            <button type="submit" name="add_dinner" class="btn btn-primary btn-touch w-100" id="addDinnerButton">Add Dinner</button>
         </form>
         {% endif %}
 
@@ -188,8 +188,19 @@
                 });
                 bsToast.show();
             });
+
+            // Prevent multiple form submissions
+            const form = document.getElementById('addDinnerForm');
+            const submitButton = document.getElementById('addDinnerButton');
+            if (form && submitButton) {
+                form.addEventListener('submit', function () {
+                    submitButton.disabled = true;
+                    setTimeout(() => {
+                        submitButton.disabled = false;
+                    }, 3000); // Re-enable after 3 seconds
+                });
+            }
         });
     </script>
 </body>
 </html>
-```
