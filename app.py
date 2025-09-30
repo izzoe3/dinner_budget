@@ -8,6 +8,7 @@ from dotenv import load_dotenv
 import csv
 import io
 import psycopg2
+from decimal import Decimal
 from functools import wraps
 
 app = Flask(__name__)
@@ -148,10 +149,11 @@ def index():
     # Fetch budget and dinner data
     cursor.execute('SELECT amount FROM budget WHERE id = 1')
     budget = cursor.fetchone()
-    budget = budget[0] if budget else 0.0
+    budget = float(budget[0]) if budget else 0.0
 
     cursor.execute('SELECT SUM(amount) as total FROM dinners')
-    total_spent = cursor.fetchone()[0] or 0.0
+    total_spent = cursor.fetchone()
+    total_spent = float(total_spent[0]) if total_spent and total_spent[0] is not None else 0.0
     remaining = budget - total_spent
 
     cursor.execute('SELECT id, description, amount, date FROM dinners ORDER BY created_at DESC LIMIT 1')
@@ -172,7 +174,7 @@ def records():
     # Fetch budget
     cursor.execute('SELECT amount FROM budget WHERE id = 1')
     budget = cursor.fetchone()
-    budget = budget[0] if budget else 0.0
+    budget = float(budget[0]) if budget else 0.0
 
     # Handle filtering
     description_filter = request.form.get('description', '')
@@ -198,10 +200,12 @@ def records():
 
     # Calculate weekly and monthly spending
     cursor.execute('SELECT SUM(amount) as total FROM dinners WHERE date >= %s' if os.getenv('VERCEL_ENV') else 'SELECT SUM(amount) as total FROM dinners WHERE date >= ?', (datetime.now().strftime('%Y-%m-%d'),))
-    week_spent = cursor.fetchone()[0] or 0.0
+    week_spent = cursor.fetchone()
+    week_spent = float(week_spent[0]) if week_spent and week_spent[0] is not None else 0.0
 
     cursor.execute('SELECT SUM(amount) as total FROM dinners WHERE date >= %s' if os.getenv('VERCEL_ENV') else 'SELECT SUM(amount) as total FROM dinners WHERE date >= ?', ((datetime.now().replace(day=1)).strftime('%Y-%m-%d'),))
-    month_spent = cursor.fetchone()[0] or 0.0
+    month_spent = cursor.fetchone()
+    month_spent = float(month_spent[0]) if month_spent and month_spent[0] is not None else 0.0
 
     threshold_alert = (budget - month_spent) < (budget * 0.2) if budget > 0 else False
 
@@ -251,7 +255,7 @@ def export():
     writer = csv.writer(output)
     writer.writerow(['Description', 'Amount', 'Date', 'Created At'])
     for dinner in dinners:
-        writer.writerow([dinner[1], dinner[2], dinner[3], dinner[4]])
+        writer.writerow([dinner[1], float(dinner[2]), dinner[3], dinner[4]])
     
     output.seek(0)
     return send_file(
