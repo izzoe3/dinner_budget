@@ -189,15 +189,18 @@
                 bsToast.show();
             });
 
-            // Prevent multiple form submissions
+            // Prevent multiple form submissions and handle errors
             const form = document.getElementById('addDinnerForm');
             const submitButton = document.getElementById('addDinnerButton');
             if (form && submitButton) {
-                form.addEventListener('submit', function () {
+                form.addEventListener('submit', function (event) {
                     submitButton.disabled = true;
+                    submitButton.textContent = 'Submitting...';
+                    // Re-enable button if submission fails (e.g., server error)
                     setTimeout(() => {
                         submitButton.disabled = false;
-                    }, 3000); // Re-enable after 3 seconds
+                        submitButton.textContent = 'Add Dinner';
+                    }, 5000); // Adjust timeout for Vercel latency
                 });
             }
         });
