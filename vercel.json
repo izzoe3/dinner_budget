@@ -1,17 +1,8 @@
 {
-  "framework": null,
   "builds": [
     {
-      "src": "*.py",
+      "src": "app.py",
       "use": "@vercel/python"
-    },
-    {
-      "src": "static/**",
-      "use": "@vercel/static"
-    },
-    {
-      "src": "templates/**",
-      "use": "@vercel/static"
     }
   ],
   "rewrites": [
@@ -22,16 +13,5 @@
   ],
   "env": {
     "FLASK_ENV": "production"
-  },
-  "headers": [
-    {
-      "source": "/(.*)",
-      "headers": [
-        {
-          "key": "Set-Cookie",
-          "value": "SameSite=Lax; Secure"
-        }
-      ]
-    }
-  ]
+  }
 }
